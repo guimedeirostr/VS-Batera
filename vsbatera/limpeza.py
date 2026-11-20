@@ -101,14 +101,23 @@ def limpar_faixa(
     audio: np.ndarray, sr: int, cfg: dict[str, Any], bateria: np.ndarray | None = None
 ) -> np.ndarray:
     """Aplica a cadeia de limpeza a uma faixa (canais, amostras)."""
-    x = audio
+    x = _sem_nan(audio)
     if bateria is not None and cfg.get("remover_vazamento_bateria", 0):
-        x = remover_vazamento(x, bateria, sr, float(cfg["remover_vazamento_bateria"]))
-    x = reduzir_ruido(x, sr, float(cfg.get("reducao_ruido", 0) or 0), bool(cfg.get("ruido_estacionario", False)))
+        x = _sem_nan(remover_vazamento(x, _sem_nan(bateria), sr, float(cfg["remover_vazamento_bateria"])))
+    # faixa quase muda (ex.: música sem guitarra) faz a redução de ruído dividir 0 por 0 e gerar NaN
+    x = _sem_nan(reduzir_ruido(x, sr, float(cfg.get("reducao_ruido", 0) or 0), bool(cfg.get("ruido_estacionario", False))))
     cadeia = construir_cadeia(cfg)
     if len(cadeia):
         x = cadeia(x, sr)
-    return np.asarray(x, dtype=np.float32)
+    return _sem_nan(np.asarray(x, dtype=np.float32))
+
+
+def _sem_nan(x: np.ndarray) -> np.ndarray:
+    """Troca NaN/infinito por silêncio (o FLAC se recusa a gravar NaN; o WAV grava lixo)."""
+    x = np.asarray(x, dtype=np.float32)
+    if not np.isfinite(x).all():
+        x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+    return x
 
 
 # --------------------------------------------------------------------------- análise / auto-calibração

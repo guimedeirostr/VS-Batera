@@ -93,6 +93,7 @@ def salvar(caminho: str | Path, audio: np.ndarray, sr: int, bits: int = 24) -> P
     """Salva (canais, amostras). WAV/FLAC via soundfile; MP3 via ffmpeg."""
     caminho = Path(caminho)
     caminho.parent.mkdir(parents=True, exist_ok=True)
+    audio = np.nan_to_num(np.asarray(audio, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
     if caminho.suffix.lower() == ".mp3":
         with tempfile.TemporaryDirectory() as tmp:
             wav = Path(tmp) / "x.wav"
