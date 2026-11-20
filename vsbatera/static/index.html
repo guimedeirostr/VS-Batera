@@ -127,6 +127,10 @@
              title="Roda o Demucs e o RoFormer, combina os dois e faz uma 2ª passada tirando o resto de bateria. Mais limpo, cerca de 2x mais lento.">
         <input type="checkbox" id="duplo" checked> separação dupla (Demucs + RoFormer)
       </label>
+      <label class="dica" style="display:flex;gap:6px;align-items:center;margin:-6px 0 10px"
+             title="A música vai para a pasta do Google Drive e o notebook do Colab processa na GPU (uns 7 min). O PC só acompanha e mostra no mixer.">
+        <input type="checkbox" id="colab"> processar no Colab (GPU) — o PC só acompanha
+      </label>
       <div id="lista"><div class="vazio">Carregando…</div></div>
     </section>
     <section>
@@ -135,6 +139,7 @@
         <button class="prim" id="fila-todas">Processar todas</button>
         <button id="fila-limpar" title="Tira da lista as já concluídas">Limpar concluídas</button>
       </div>
+      <div id="colab-status" class="dica" style="margin:0 0 6px"></div>
       <div id="fila-resumo"></div>
       <div id="fila"><div class="vazio">Fila vazia.</div></div>
       <div class="dica">Processa uma música atrás da outra. Pode fechar o navegador: o processamento continua
@@ -236,10 +241,15 @@ async function carregarMusicas() {
 async function processar(nome, jaFeita) {
   if (jaFeita && !confirm("Separar de novo? Isso substitui as faixas atuais dessa música.")) return;
   try {
-    await api("/api/processar", { method: "POST", body: JSON.stringify({ musica: nome, auto: $("auto").checked, modo: $("duplo").checked ? "duplo" : "simples" }) });
+    await api("/api/processar", { method: "POST", body: JSON.stringify({ musica: nome, auto: $("auto").checked, modo: modoEscolhido() }) });
     await atualizarStatus(); carregarMusicas();
   } catch (e) { alert(e.message); }
 }
+
+// onde processar: no PC (dupla ou só Demucs) ou no Colab
+function modoEscolhido() { return $("colab").checked ? "colab" : ($("duplo").checked ? "duplo" : "simples"); }
+$("colab").checked = localStorage.getItem("vsb-colab") === "1";
+$("colab").onchange = () => localStorage.setItem("vsb-colab", $("colab").checked ? "1" : "0");
 
 // upload
 const soltar = $("soltar");
@@ -263,7 +273,7 @@ $("yt-baixar").onclick = async () => {
   if (!url) return;
   try {
     await api("/api/youtube", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url, fila: true, auto: $("auto").checked, modo: $("duplo").checked ? "duplo" : "simples" }) });
+      body: JSON.stringify({ url, fila: true, auto: $("auto").checked, modo: modoEscolhido() }) });
     $("yt-link").value = "";
     if (!timerYt) timerYt = setInterval(atualizarYt, 1500);
     atualizarYt();
@@ -299,6 +309,11 @@ async function atualizarStatus() {
   const filaAntes = JSON.stringify(filaAtual.map(i => [i.musica, i.status]));
   filaAtual = e.fila || [];
   desenharFila();
+  const c = e.colab || {};
+  $("colab-status").innerHTML = !filaAtual.some(i => i.modo === "colab") ? "" : c.vivo
+    ? (c.processando ? `🟢 Colab ligado · processando ${c.processando.replace(/</g, "&lt;")} (${c.pct || 0}% · ${c.etapa || ""})`
+                     : "🟢 Colab ligado · esperando músicas novas")
+    : "🔴 Colab desligado — abra o notebook no Colab para as músicas da fila serem processadas";
 
   if (e.tipo) {
     $("progresso").hidden = false;
@@ -334,7 +349,7 @@ function desenharFila() {
   $("fila-resumo").textContent = filaAtual.length
     ? `${feitas} pronta(s) · ${n("processando")} processando · ${esperando} esperando` + (n("erro") ? ` · ${n("erro")} com erro` : "")
       + (esperando ? ` · ~${Math.round(filaAtual.filter(i => i.status === "esperando" || i.status === "processando")
-          .reduce((t, i) => t + (i.modo === "duplo" ? 90 : 40), 0) / 60)} h no total` : "")
+          .reduce((t, i) => t + ({ duplo: 90, colab: 8 }[i.modo] || 40), 0) / 60)} h no total` : "")
     : "";
   if (!filaAtual.length) { el.innerHTML = '<div class="vazio">Fila vazia.</div>'; return; }
   el.innerHTML = "";
@@ -342,7 +357,10 @@ function desenharFila() {
     const d = document.createElement("div"); d.className = "item-fila " + it.status;
     const nome = it.musica.replace(/\.[^.]+$/, "");
     let sub = { esperando: "esperando", processando: "processando agora", feita: "pronta", erro: "erro: " + (it.erro || "") }[it.status];
-    sub += it.modo === "duplo" ? " · dupla" : " · só Demucs";
+    if (it.modo === "colab") {
+      sub = { esperando: "esperando o Colab", processando: `no Colab · ${it.pct || 0}%${it.etapa ? " · " + it.etapa : ""}`,
+              feita: "pronta (Colab)", erro: "erro: " + (it.erro || "") }[it.status];
+    } else sub += it.modo === "duplo" ? " · dupla" : " · só Demucs";
     if (it.status === "feita" && it.inicio && it.fim) sub += " em " + fmt(it.fim - it.inicio);
     d.innerHTML = `<span class="st">${ICONES[it.status] || ""}</span><span class="nf"><span></span><small></small></span>`;
     d.querySelector(".nf span").textContent = nome; d.querySelector(".nf").title = nome;
@@ -358,7 +376,7 @@ function desenharFila() {
   }
 }
 $("fila-todas").onclick = async () => {
-  const r = await api("/api/fila/adicionar", { method: "POST", body: JSON.stringify({ musicas: "todas", auto: $("auto").checked, modo: $("duplo").checked ? "duplo" : "simples" }) });
+  const r = await api("/api/fila/adicionar", { method: "POST", body: JSON.stringify({ musicas: "todas", auto: $("auto").checked, modo: modoEscolhido() }) });
   if (!r.adicionadas) alert("Nenhuma música nova para processar: todas já foram processadas ou já estão na fila.");
   atualizarStatus();
 };

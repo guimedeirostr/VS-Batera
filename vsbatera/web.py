@@ -6,6 +6,7 @@ Só usa a biblioteca padrão do Python (http.server). Tudo roda no seu computado
 """
 from __future__ import annotations
 
+import glob
 import io
 import json
 import mimetypes
@@ -185,6 +186,23 @@ def _salvar_mix(projeto: Path, pedido: dict[str, Any]) -> Path:
     return destino
 
 
+# --------------------------------------------------------------------------- Colab
+def ler_status_colab(saida: Path) -> dict[str, Any]:
+    """Lê o arquivo que o notebook do Colab grava no Drive. "vivo" = atualizado nos últimos 3 minutos."""
+    try:
+        st = json.loads((saida / "_colab_status.json").read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {"vivo": False}
+    st["vivo"] = time.time() - float(st.get("atualizado", 0)) < 180
+    return st
+
+
+def colab_pronta(saida: Path, stem: str) -> bool:
+    proj = saida / stem
+    return bool(achar_faixas(proj / "limpas")) and any(proj.glob(f"{glob.escape(stem)} - sem bateria.*"))
+
+
+
 # --------------------------------------------------------------------------- fila
 class Fila:
     """Fila de músicas para processar uma depois da outra. Fica salva em saida/fila.json,
@@ -244,12 +262,41 @@ class Fila:
 
     def copia(self) -> list[dict[str, Any]]:
         with self.trava:
+            self._atualizar_colab()
             return json.loads(json.dumps(self.itens))
+
+    def _atualizar_colab(self) -> None:
+        """Itens com modo "colab" são processados pelo notebook do Colab (pasta compartilhada pelo Drive).
+        O painel só acompanha: lê saida/_colab_status.json e vê quando o resultado aparece."""
+        if not self.raiz_saida or not any(i.get("modo") == "colab" for i in self.itens):
+            return
+        st = ler_status_colab(self.raiz_saida)
+        mudou = False
+        for it in self.itens:
+            if it.get("modo") != "colab" or it["status"] in ("feita", "erro"):
+                continue
+            stem = Path(it["musica"]).stem
+            if colab_pronta(self.raiz_saida, stem):
+                it.update(status="feita", fim=time.time(), pct=100)
+                mudou = True
+            elif st.get("processando") == stem and st.get("vivo"):
+                if it["status"] != "processando":
+                    it.update(status="processando", inicio=it.get("inicio") or time.time())
+                    mudou = True
+                it["pct"], it["etapa"] = st.get("pct", 0), st.get("etapa")
+            elif stem in (st.get("erros") or []):
+                it.update(status="erro", erro="o Colab não conseguiu processar (veja o notebook)", fim=time.time())
+                mudou = True
+            elif it["status"] == "processando":
+                it["status"] = "esperando"
+                mudou = True
+        if mudou:
+            self._gravar()
 
     def _proximo(self) -> dict[str, Any] | None:
         with self.trava:
             for it in self.itens:
-                if it["status"] == "esperando":
+                if it["status"] == "esperando" and it.get("modo") != "colab":
                     it["status"], it["inicio"] = "processando", time.time()
                     self._gravar()
                     return it
@@ -438,6 +485,7 @@ def _handler(app: App):
                 if caminho == "/api/status":
                     e = TAREFA.copia()
                     e["fila"] = FILA.copia()
+                    e["colab"] = ler_status_colab(app.saida)
                     return self._json(e)
                 if caminho.startswith("/api/projeto/"):
                     return self._json(app.info_projeto(caminho[len("/api/projeto/"):]))
