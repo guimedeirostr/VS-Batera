@@ -40,6 +40,15 @@
   .musica .meta { color: var(--fraco); font-size: 12px; margin: 2px 0 8px; }
   .musica .acoes { display: flex; gap: 6px; }
   .vazio { color: var(--fraco); font-size: 13px; }
+  .fila-topo { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
+  .item-fila { display: flex; align-items: center; gap: 8px; padding: 6px 4px; border-top: 1px solid var(--borda); font-size: 13px; }
+  .item-fila .st { width: 18px; text-align: center; }
+  .item-fila .nf { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .item-fila .nf small { display: block; color: var(--fraco); font-size: 11px; }
+  .item-fila.processando .nf { color: var(--acento2); font-weight: 600; }
+  .item-fila.erro .nf small { color: var(--erro); }
+  .item-fila button { padding: 1px 7px; }
+  #fila-resumo { color: var(--fraco); font-size: 12px; margin-bottom: 8px; }
 
   /* progresso */
   #progresso[hidden] { display: none; }
@@ -106,10 +115,25 @@
       <h2>Músicas</h2>
       <div id="soltar">Arraste uma música aqui<br><small>ou clique para escolher (mp3, wav, flac, m4a)</small></div>
       <input type="file" id="arquivo" accept="audio/*" hidden>
-      <label class="dica" style="display:flex;gap:6px;align-items:center;margin:0 0 10px">
+      <label class="dica" style="display:flex;gap:6px;align-items:center;margin:0 0 4px">
         <input type="checkbox" id="auto" checked> calibração automática
       </label>
+      <label class="dica" style="display:flex;gap:6px;align-items:center;margin:0 0 10px"
+             title="Roda o Demucs e o RoFormer, combina os dois e faz uma 2ª passada tirando o resto de bateria. Mais limpo, cerca de 2x mais lento.">
+        <input type="checkbox" id="duplo" checked> separação dupla (Demucs + RoFormer)
+      </label>
       <div id="lista"><div class="vazio">Carregando…</div></div>
+    </section>
+    <section>
+      <h2>Fila de processamento</h2>
+      <div class="fila-topo">
+        <button class="prim" id="fila-todas">Processar todas</button>
+        <button id="fila-limpar" title="Tira da lista as já concluídas">Limpar concluídas</button>
+      </div>
+      <div id="fila-resumo"></div>
+      <div id="fila"><div class="vazio">Fila vazia.</div></div>
+      <div class="dica">Processa uma música atrás da outra. Pode fechar o navegador: o processamento continua
+        enquanto o painel estiver aberto no terminal, e o PC não entra em suspensão.</div>
     </section>
   </div>
 
@@ -173,7 +197,7 @@ const $ = (id) => document.getElementById(id);
 const api = async (url, opts) => { const r = await fetch(url, opts); const j = await r.json(); if (!r.ok) throw new Error(j.erro || r.status); return j; };
 const fmt = (s) => { s = Math.max(0, s || 0); return Math.floor(s / 60) + ":" + String(Math.floor(s % 60)).padStart(2, "0"); };
 
-let projetoAtual = null, infoAtual = null, ultimoEstado = null;
+let projetoAtual = null, infoAtual = null, ultimoEstado = null, filaAtual = [];
 
 // ------------------------------------------------------------------ músicas
 async function carregarMusicas() {
@@ -181,7 +205,6 @@ async function carregarMusicas() {
   const el = $("lista");
   if (!lista.length) { el.innerHTML = '<div class="vazio">Nenhuma música ainda.</div>'; return; }
   el.innerHTML = "";
-  const rodando = ultimoEstado && ultimoEstado.rodando;
   for (const m of lista) {
     const stem = m.nome.replace(/\.[^.]+$/, "");
     const d = document.createElement("div");
@@ -194,9 +217,11 @@ async function carregarMusicas() {
       const b = document.createElement("button"); b.className = "prim"; b.textContent = "Abrir faixas";
       b.onclick = () => abrirProjeto(stem); acoes.append(b);
     }
-    const p = document.createElement("button"); p.textContent = m.processada ? "Reprocessar" : "Processar";
-    if (!m.processada) p.className = "prim";
-    p.disabled = rodando;
+    const naFila = filaAtual.find(i => i.musica === m.nome && (i.status === "esperando" || i.status === "processando"));
+    const p = document.createElement("button");
+    p.textContent = naFila ? (naFila.status === "processando" ? "Processando…" : "Na fila") : (m.processada ? "Reprocessar" : "Pôr na fila");
+    if (!m.processada && !naFila) p.className = "prim";
+    p.disabled = !!naFila;
     p.onclick = () => processar(m.nome, m.processada);
     acoes.append(p);
     el.append(d);
@@ -206,8 +231,8 @@ async function carregarMusicas() {
 async function processar(nome, jaFeita) {
   if (jaFeita && !confirm("Separar de novo? Isso substitui as faixas atuais dessa música.")) return;
   try {
-    await api("/api/processar", { method: "POST", body: JSON.stringify({ musica: nome, auto: $("auto").checked }) });
-    acompanhar();
+    await api("/api/processar", { method: "POST", body: JSON.stringify({ musica: nome, auto: $("auto").checked, modo: $("duplo").checked ? "duplo" : "simples" }) });
+    await atualizarStatus(); carregarMusicas();
   } catch (e) { alert(e.message); }
 }
 
@@ -228,38 +253,80 @@ async function enviar(f) {
 
 // ------------------------------------------------------------------ progresso
 let timerStatus = null;
-function acompanhar() { if (!timerStatus) { timerStatus = setInterval(atualizarStatus, 1000); } atualizarStatus(); }
+function acompanhar() { if (!timerStatus) timerStatus = setInterval(atualizarStatus, 2000); atualizarStatus(); }
+const ICONES = { esperando: "⏳", processando: "⚙️", feita: "✅", erro: "⚠️" };
 async function atualizarStatus() {
-  const e = await api("/api/status");
+  let e;
+  try { e = await api("/api/status"); } catch (_) { return; }
   const antes = ultimoEstado;
   ultimoEstado = e;
-  if (!e.tipo) { $("progresso").hidden = true; clearInterval(timerStatus); timerStatus = null; return; }
-  $("progresso").hidden = false;
-  $("prog-titulo").textContent = (e.tipo === "salvar" ? "Salvando mix · " : "Processando · ") + e.projeto;
-  $("pct").textContent = Math.floor(e.pct_total) + "%";
-  $("barra-total").style.width = e.pct_total + "%";
-  const decorrido = ((e.fim || Date.now() / 1000) - e.inicio);
-  let info = "tempo: " + fmt(decorrido);
-  if (e.rodando && e.pct_total > 2) info += " · falta ~" + fmt(decorrido * (100 - e.pct_total) / e.pct_total);
-  if (!e.rodando) info = e.erro ? "" : "concluído em " + fmt(decorrido);
-  $("prog-info").innerHTML = e.erro ? `<span class="erro">Erro: ${e.erro.replace(/</g, "&lt;")}</span>` : info;
-  $("etapas").innerHTML = e.etapas.map(s => `
-      <span class="rot ${s.nome === e.etapa && e.rodando ? "atual" : ""}">${ROTULOS[s.nome] || s.nome}</span>
-      <div class="barra fina"><div style="width:${s.pct}%"></div></div>
-      <span class="num">${Math.floor(s.pct)}%</span>`).join("");
-  const log = $("log"); const noFim = log.scrollTop + log.clientHeight >= log.scrollHeight - 5;
-  log.textContent = e.log.join("\n"); if (noFim) log.scrollTop = log.scrollHeight;
+  const filaAntes = JSON.stringify(filaAtual.map(i => [i.musica, i.status]));
+  filaAtual = e.fila || [];
+  desenharFila();
 
-  if (!e.rodando) {
-    clearInterval(timerStatus); timerStatus = null;
-    if (antes && antes.rodando && !e.erro) {
-      await carregarMusicas();
-      if (e.tipo === "processar" || e.projeto !== projetoAtual) abrirProjeto(e.projeto);
-      else atualizarFinais();
-    }
+  if (e.tipo) {
+    $("progresso").hidden = false;
+    const tot = filaAtual.length, pos = filaAtual.findIndex(i => i.status === "processando") + 1;
+    $("prog-titulo").textContent = (pos ? `Fila ${pos} de ${tot} · ` : "") + "Processando · " + e.projeto;
+    $("pct").textContent = Math.floor(e.pct_total) + "%";
+    $("barra-total").style.width = e.pct_total + "%";
+    const decorrido = ((e.fim || Date.now() / 1000) - e.inicio);
+    let info = "tempo: " + fmt(decorrido);
+    if (e.rodando && e.pct_total > 2) info += " · falta ~" + fmt(decorrido * (100 - e.pct_total) / e.pct_total);
+    if (!e.rodando) info = e.erro ? "" : "concluído em " + fmt(decorrido);
+    $("prog-info").innerHTML = e.erro ? `<span class="erro">Erro: ${e.erro.replace(/</g, "&lt;")}</span>` : info;
+    $("etapas").innerHTML = e.etapas.map(s => `
+        <span class="rot ${s.nome === e.etapa && e.rodando ? "atual" : ""}">${ROTULOS[s.nome] || s.nome}</span>
+        <div class="barra fina"><div style="width:${s.pct}%"></div></div>
+        <span class="num">${Math.floor(s.pct)}%</span>`).join("");
+    const log = $("log"); const noFim = log.scrollTop + log.clientHeight >= log.scrollHeight - 5;
+    log.textContent = e.log.join("\n"); if (noFim) log.scrollTop = log.scrollHeight;
   }
-  if (!antes || antes.rodando !== e.rodando) carregarMusicas();
+
+  const terminouUma = antes && antes.rodando && (!e.rodando || antes.projeto !== e.projeto);
+  if (terminouUma) {
+    if (!projetoAtual) abrirProjeto(antes.projeto);
+    else if (antes.projeto === projetoAtual) abrirProjeto(projetoAtual);
+  }
+  if (terminouUma || filaAntes !== JSON.stringify(filaAtual.map(i => [i.musica, i.status]))) carregarMusicas();
 }
+
+function desenharFila() {
+  const el = $("fila");
+  const n = (st) => filaAtual.filter(i => i.status === st).length;
+  const esperando = n("esperando"), feitas = n("feita");
+  $("fila-resumo").textContent = filaAtual.length
+    ? `${feitas} pronta(s) · ${n("processando")} processando · ${esperando} esperando` + (n("erro") ? ` · ${n("erro")} com erro` : "")
+      + (esperando ? ` · ~${Math.round(filaAtual.filter(i => i.status === "esperando" || i.status === "processando")
+          .reduce((t, i) => t + (i.modo === "duplo" ? 90 : 40), 0) / 60)} h no total` : "")
+    : "";
+  if (!filaAtual.length) { el.innerHTML = '<div class="vazio">Fila vazia.</div>'; return; }
+  el.innerHTML = "";
+  for (const it of filaAtual) {
+    const d = document.createElement("div"); d.className = "item-fila " + it.status;
+    const nome = it.musica.replace(/\.[^.]+$/, "");
+    let sub = { esperando: "esperando", processando: "processando agora", feita: "pronta", erro: "erro: " + (it.erro || "") }[it.status];
+    sub += it.modo === "duplo" ? " · dupla" : " · só Demucs";
+    if (it.status === "feita" && it.inicio && it.fim) sub += " em " + fmt(it.fim - it.inicio);
+    d.innerHTML = `<span class="st">${ICONES[it.status] || ""}</span><span class="nf"><span></span><small></small></span>`;
+    d.querySelector(".nf span").textContent = nome; d.querySelector(".nf").title = nome;
+    d.querySelector(".nf small").textContent = sub;
+    if (it.status === "feita") {
+      const b = document.createElement("button"); b.textContent = "Abrir"; b.onclick = () => abrirProjeto(nome); d.append(b);
+    } else if (it.status !== "processando") {
+      const b = document.createElement("button"); b.textContent = "×"; b.title = "Tirar da fila";
+      b.onclick = async () => { await api("/api/fila/remover", { method: "POST", body: JSON.stringify({ musica: it.musica }) }); atualizarStatus(); };
+      d.append(b);
+    }
+    el.append(d);
+  }
+}
+$("fila-todas").onclick = async () => {
+  const r = await api("/api/fila/adicionar", { method: "POST", body: JSON.stringify({ musicas: "todas", auto: $("auto").checked, modo: $("duplo").checked ? "duplo" : "simples" }) });
+  if (!r.adicionadas) alert("Nenhuma música nova para processar: todas já foram processadas ou já estão na fila.");
+  atualizarStatus();
+};
+$("fila-limpar").onclick = async () => { await api("/api/fila/limpar", { method: "POST", body: "{}" }); atualizarStatus(); };
 
 // ------------------------------------------------------------------ mixer (Web Audio)
 const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -277,8 +344,12 @@ async function abrirProjeto(nome) {
   $("mix-titulo").textContent = nome;
   $("nome-saida").value = nome + " - minha mix";
   const sel = $("conjunto"); sel.innerHTML = "";
-  const nomes = { limpas: "Limpas (com limpeza)", stems: "Cruas (saída da IA)" };
-  for (const k of ["limpas", "stems"]) if (infoAtual.conjuntos[k]) sel.add(new Option(nomes[k], k));
+  const nomes = infoAtual.duplo
+    ? { limpas: "Limpas (combinado + limpeza)", stems: "Combinado (Demucs + RoFormer)",
+        stems_roformer: "Só RoFormer (6 faixas)", stems_demucs: "Só Demucs" }
+    : { limpas: "Limpas (com limpeza)", stems: "Cruas (saída da IA)" };
+  for (const k of ["limpas", "stems", "stems_roformer", "stems_demucs"])
+    if (infoAtual.conjuntos[k]) sel.add(new Option(nomes[k] || k, k));
   sel.onchange = () => carregarConjunto(sel.value);
   const s = infoAtual.salvo || {};
   if (s.formato) $("formato").value = s.formato;
@@ -435,12 +506,14 @@ $("salvar").onclick = async () => {
   const temSolo = faixas.some(f => f.solo);
   const conf = {};
   for (const f of faixas) conf[f.nome] = { volume_db: f.vol_db, mudo: temSolo ? !f.solo : f.mudo };
+  const bt = $("salvar"); bt.disabled = true; bt.textContent = "Salvando…";
   try {
     await api("/api/salvar", { method: "POST", body: JSON.stringify({
       projeto: projetoAtual, conjunto: $("conjunto").value, faixas: conf, nome: $("nome-saida").value,
       formato: $("formato").value, velocidade: +$("velocidade").value }) });
-    acompanhar();
-  } catch (e) { alert(e.message); }
+    await atualizarFinais();
+  } catch (e) { alert("Não consegui salvar: " + e.message); }
+  bt.disabled = false; bt.textContent = "💾 Salvar mix";
 };
 
 async function atualizarFinais() {
@@ -451,15 +524,17 @@ async function atualizarFinais() {
   for (const f of infoAtual.finais) {
     const d = document.createElement("div"); d.className = "final";
     d.innerHTML = `<span class="n"></span><audio controls preload="none"></audio><a class="baixar" title="Baixar">⤓</a><span class="dica" style="margin:0">${f.mb} MB</span>`;
-    d.querySelector(".n").textContent = f.nome; d.querySelector(".n").title = f.nome;
+    const amigavel = { "sem_bateria_residual": "Original − bateria (1 passada)",
+                       "sem_bateria_2passadas": "Original − bateria (2 passadas, mais limpo)" }[f.nome.replace(/\.[^.]+$/, "")];
+    d.querySelector(".n").textContent = amigavel || f.nome; d.querySelector(".n").title = f.nome;
     d.querySelector("audio").src = f.url; d.querySelector("a").href = f.url + "?baixar=1";
     d.querySelector("audio").onplay = () => tocando && pausar();
     el.append(d);
   }
 }
 
-carregarMusicas();
 acompanhar();
+carregarMusicas();
 </script>
 </body>
 </html>

@@ -40,7 +40,8 @@ def _preset(args) -> dict:
 
 
 def _add_sep(p):
-    p.add_argument("--backend", choices=["demucs", "audio-separator"], help="motor de separação")
+    p.add_argument("--backend", choices=["demucs", "duplo", "audio-separator"],
+                   help="motor de separação; duplo = Demucs + RoFormer combinados (mais limpo, mais lento)")
     p.add_argument("--modelo", help="htdemucs_ft (padrão), htdemucs, htdemucs_6s ou arquivo de modelo UVR")
     p.add_argument("--dispositivo", help="auto | cpu | cuda | mps")
     p.add_argument("--shifts", type=int, help="passadas extras do Demucs (mais = melhor e mais lento)")

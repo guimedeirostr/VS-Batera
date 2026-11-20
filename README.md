@@ -72,11 +72,46 @@ Resultado em `saida/minha_musica/minha_musica - sem bateria.wav`.
 vsbatera web            # abre http://localhost:8765
 ```
 
-- **Processar** uma música (arraste o arquivo) acompanhando a **% de cada etapa**, tempo e estimativa.
+- **Fila**: arraste músicas, clique em **Processar todas** e elas são processadas uma atrás da outra,
+  com a **% de cada etapa**, tempo e estimativa. A fila fica salva e continua se o painel reiniciar.
 - **Faixa por faixa**: forma de onda, volume (dB), mudo (M), solo (S) e download de cada faixa;
   compare faixas limpas × cruas e com a música original.
 - **Salvar mix** com os volumes do mixer, em WAV/MP3/FLAC e na velocidade de estudo (100% a 60%).
   Os ajustes ficam em `saida/<música>/preset_web.yaml` e voltam quando você abre a música de novo.
+
+## Separação dupla (Demucs + RoFormer) e 2ª passada
+
+```bash
+vsbatera tudo musicas/minha.mp3 --auto --backend duplo
+```
+
+1. Roda o **Demucs** (`htdemucs_ft`) e o **BS-RoFormer-SW** (6 faixas: voz, baixo, bateria, guitarra,
+   teclado, outros).
+2. **Combina** os dois (média): bateria, baixo e voz ficam mais limpos que em cada modelo sozinho.
+3. **2ª passada**: separa de novo o "original − bateria" e tira o resto de bateria que sobrou →
+   `sem_bateria_2passadas.wav`.
+
+No painel, cada música processada assim mostra **Combinado**, **Só RoFormer** e **Só Demucs** para você
+comparar de ouvido. No processador é ~2x mais lento que só o Demucs; numa GPU é questão de minutos.
+
+Instalação do RoFormer: `pip install -e ".[roformer]"`. No **Windows com Python 3.13+** o pacote `diffq`
+não compila; instale as dependências do `audio-separator` sem ele e depois `pip install --no-deps audio-separator`
+e `pip install -U beartype`.
+
+Opções do preset (`separacao`): `backend: duplo`, `modelo_roformer`, `segunda_passada`, `guardar_versoes`.
+Variáveis de ambiente: `VSBATERA_FORMATO_FAIXAS=flac` (faixas em FLAC, ~metade do tamanho) e
+`VSBATERA_MODELOS=<pasta>` (onde ficam os modelos baixados; padrão `~/.vsbatera/modelos`).
+
+## Google Colab (GPU)
+
+O notebook [`colab/VS_Batera_Colab.ipynb`](colab/VS_Batera_Colab.ipynb) processa **todas as músicas** de
+`VS-Batera/musicas` no seu Google Drive usando a GPU do Colab e grava em `VS-Batera/saida`. Abra pelo
+Colab (**Arquivo → Abrir notebook → GitHub**), escolha ambiente com **GPU** e rode as células.
+Para ouvir/mixar no PC, use o Google Drive para computador e aponte o painel para as pastas do Drive:
+
+```bash
+vsbatera web --musicas "G:\Meu Drive\VS-Batera\musicas" -o "G:\Meu Drive\VS-Batera\saida"
+```
 
 ## Fluxo de calibração (pra chegar no "som perfeito")
 

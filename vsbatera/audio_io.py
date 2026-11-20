@@ -1,6 +1,7 @@
 """Leitura/gravação de áudio. Usa soundfile e cai para o ffmpeg quando o formato não é suportado."""
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tempfile
@@ -8,6 +9,34 @@ from pathlib import Path
 
 import numpy as np
 import soundfile as sf
+
+
+# Formato das faixas intermediárias (stems, limpas, versões sem bateria). FLAC = sem perda e ~metade do
+# tamanho do WAV; útil no Google Drive. Pode ser trocado pela variável de ambiente VSBATERA_FORMATO_FAIXAS.
+FORMATO_FAIXAS = os.environ.get("VSBATERA_FORMATO_FAIXAS", "wav").lower().lstrip(".")
+EXT_FAIXAS = (".wav", ".flac")
+
+
+def arquivo_faixa(pasta: str | Path, nome: str) -> Path:
+    """Caminho para gravar a faixa `nome` no formato configurado."""
+    return Path(pasta) / f"{nome}.{FORMATO_FAIXAS}"
+
+
+def achar_faixas(pasta: str | Path) -> list[Path]:
+    """Faixas de áudio (wav ou flac) de uma pasta, em ordem."""
+    pasta = Path(pasta)
+    if not pasta.exists():
+        return []
+    return sorted(p for p in pasta.iterdir() if p.is_file() and p.suffix.lower() in EXT_FAIXAS)
+
+
+def achar_arquivo(pasta: str | Path, nome: str) -> Path | None:
+    """`nome`.wav ou `nome`.flac, o que existir."""
+    for ext in EXT_FAIXAS:
+        p = Path(pasta) / f"{nome}{ext}"
+        if p.exists():
+            return p
+    return None
 
 
 def carregar(caminho: str | Path, sr_alvo: int | None = None) -> tuple[np.ndarray, int]:

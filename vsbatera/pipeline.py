@@ -19,7 +19,7 @@ from typing import Any, Callable
 import numpy as np
 
 from . import config as cfgmod
-from .audio_io import carregar, salvar
+from .audio_io import achar_arquivo, achar_faixas, arquivo_faixa, carregar, salvar
 from .limpeza import analisar_faixa, limpar_faixa, sugerir_config
 from .mix import masterizar, mixar
 
@@ -40,7 +40,7 @@ def carregar_stems(
     projeto: Path, subpasta: str = "stems", inicio: float | None = None, duracao: float | None = None
 ) -> tuple[dict[str, np.ndarray], int]:
     pasta = Path(projeto) / subpasta
-    arquivos = sorted(pasta.glob("*.wav"))
+    arquivos = achar_faixas(pasta)
     if not arquivos:
         raise FileNotFoundError(f"Nenhuma faixa em {pasta}. Rode `vsbatera separar` antes.")
     faixas, sr = {}, 44100
@@ -66,6 +66,9 @@ def etapa_separar(
         shifts=int(s.get("shifts", 2)),
         overlap=float(s.get("overlap", 0.25)),
         progresso=progresso,
+        modelo_roformer=s.get("modelo_roformer", "BS-Roformer-SW.ckpt"),
+        segunda_passada=bool(s.get("segunda_passada", True)),
+        guardar_versoes=bool(s.get("guardar_versoes", True)),
     )
 
 
@@ -103,7 +106,7 @@ def etapa_limpar(
             cfg = cfgmod.config_da_faixa(preset, nome)
             print(f"[limpar] {nome}: {_resumo(cfg)}")
             limpo = limpar_faixa(audio, sr, cfg, bateria)
-        saida[nome] = salvar(destino / f"{nome}.wav", limpo, sr)
+        saida[nome] = salvar(arquivo_faixa(destino, nome), limpo, sr)
     return saida
 
 
@@ -113,7 +116,7 @@ def etapa_mixar(
     m = preset["mix"]
     previa = inicio is not None or duracao is not None
     if m.get("fonte") == "residual":
-        audio, sr = carregar(projeto / "sem_bateria_residual.wav")
+        audio, sr = carregar(achar_arquivo(projeto, "sem_bateria_residual") or projeto / "sem_bateria_residual.wav")
         audio = _trecho(audio, sr, inicio, duracao)
         from .mix import alterar_velocidade
 

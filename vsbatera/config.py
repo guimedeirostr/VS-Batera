@@ -8,7 +8,13 @@ from typing import Any
 import yaml
 
 PADRAO: dict[str, Any] = {
-    "separacao": {"backend": "demucs", "modelo": "htdemucs_ft", "dispositivo": "auto", "shifts": 2, "overlap": 0.25},
+    # backend: demucs (só Demucs) | duplo (Demucs + RoFormer, média dos dois: mais limpo e ~2x mais lento)
+    "separacao": {
+        "backend": "demucs", "modelo": "htdemucs_ft", "dispositivo": "auto", "shifts": 2, "overlap": 0.25,
+        "modelo_roformer": "BS-Roformer-SW.ckpt",
+        "segunda_passada": True,  # no modo duplo: separa de novo a versão sem bateria para tirar o resto
+        "guardar_versoes": True,  # no modo duplo: guarda também "só Demucs" e "só RoFormer" para comparar
+    },
     # aplicado a toda faixa que não tiver configuração própria em "faixas"
     "padrao_faixa": {
         "ganho_db": 0.0,

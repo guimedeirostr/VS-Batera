@@ -22,6 +22,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from . import config as cfgmod
 from . import pipeline as pl
+from .audio_io import achar_faixas
 
 EXT_AUDIO = {".mp3", ".wav", ".flac", ".m4a", ".ogg", ".aac"}
 STATIC = Path(__file__).parent / "static"
@@ -111,11 +112,13 @@ class _Tee(io.TextIOBase):
 
 
 # --------------------------------------------------------------------------- trabalhos
-def _processar(musica: Path, raiz: Path, auto: bool, modelo: str | None) -> None:
+def _processar(musica: Path, raiz: Path, auto: bool, modelo: str | None, modo: str = "simples") -> None:
     try:
         preset = cfgmod.carregar_preset(None)
         if modelo:
             preset["separacao"]["modelo"] = modelo
+        if modo == "duplo":
+            preset["separacao"]["backend"] = "duplo"
         projeto = pl.pasta_projeto(musica, raiz)
         pl.etapa_separar(musica, projeto, preset, progresso=lambda f: TAREFA.progresso("separar", f))
         TAREFA.progresso("separar", 1)
@@ -134,60 +137,159 @@ def _processar(musica: Path, raiz: Path, auto: bool, modelo: str | None) -> None
         TAREFA.terminar(erro=f"{type(e).__name__}: {e}")
 
 
-def _salvar_mix(projeto: Path, pedido: dict[str, Any]) -> None:
+def _salvar_mix(projeto: Path, pedido: dict[str, Any]) -> Path:
     """Gera a versão final com os volumes/mudos escolhidos no painel e grava o preset usado."""
+    import numpy as np
+
+    from .audio_io import salvar
+    from .mix import mixar
+
+    base = projeto / "preset_web.yaml"
+    if not base.exists():
+        base = projeto / "preset_sugerido.yaml"
+    preset = cfgmod.carregar_preset(base if base.exists() else None)
+    m = preset["mix"]
+    for chave in ("velocidade", "tom_semitons", "lufs_alvo", "formato", "fonte"):
+        if pedido.get(chave) not in (None, ""):
+            m[chave] = pedido[chave]
+
+    conf = pedido.get("faixas", {})
+    bat = conf.get("bateria", {})
+    m["bateria_guia_db"] = None if bat.get("mudo", True) else float(bat.get("volume_db", -18))
+    for nome, c in conf.items():
+        if nome == "bateria":
+            continue
+        f = preset.setdefault("faixas", {}).setdefault(nome, {})
+        f["mudo"] = bool(c.get("mudo"))
+        f["volume_mix_db"] = float(c.get("volume_db", 0))
+        if "pan" in c:
+            f["pan"] = float(c["pan"])
+
+    sub = pedido.get("conjunto") or ("limpas" if (projeto / "limpas").exists() else "stems")
+    faixas, sr = pl.carregar_stems(projeto, sub)
+    for nome in list(faixas):
+        if nome == "bateria":  # a bateria só entra como guia, no volume de bateria_guia_db
+            continue
+        db = float(conf.get(nome, {}).get("volume_db", 0))
+        if db:
+            faixas[nome] = (faixas[nome] * (10 ** (db / 20))).astype(np.float32)
+    cfg_faixas = {n: cfgmod.config_da_faixa(preset, n) for n in faixas}
+    final = mixar(faixas, sr, cfg_faixas, m)
+
+    nome = (pedido.get("nome") or f"{projeto.name} - minha mix").strip()
+    nome = re.sub(r'[\\/:*?"<>|]+', "_", nome)
+    destino = projeto / f"{nome}.{m.get('formato', 'wav')}"
+    salvar(destino, final, sr)
+    cfgmod.salvar_preset(preset, projeto / "preset_web.yaml")
+    print(f"[salvar] Pronto: {destino}")
+    return destino
+
+
+# --------------------------------------------------------------------------- fila
+class Fila:
+    """Fila de músicas para processar uma depois da outra. Fica salva em saida/fila.json,
+    então se o painel for reiniciado ela continua de onde parou."""
+
+    def __init__(self) -> None:
+        self.trava = threading.Lock()
+        self.itens: list[dict[str, Any]] = []
+        self.arquivo: Path | None = None
+        self.raiz_musicas: Path | None = None
+        self.raiz_saida: Path | None = None
+        self.acordar = threading.Event()
+
+    def configurar(self, musicas: Path, saida: Path) -> None:
+        self.raiz_musicas, self.raiz_saida = musicas, saida
+        self.arquivo = saida / "fila.json"
+        if self.arquivo.exists():
+            try:
+                self.itens = json.loads(self.arquivo.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                self.itens = []
+        for it in self.itens:  # o que estava rodando quando o painel caiu volta para a fila
+            if it["status"] == "processando":
+                it["status"] = "esperando"
+        self._gravar()
+        threading.Thread(target=self._trabalhar, daemon=True).start()
+
+    def _gravar(self) -> None:
+        if self.arquivo:
+            self.arquivo.write_text(json.dumps(self.itens, ensure_ascii=False, indent=1), encoding="utf-8")
+
+    def adicionar(self, nomes: list[str], auto: bool = True, modelo: str | None = None,
+                  modo: str = "duplo") -> int:
+        n = 0
+        with self.trava:
+            pendentes = {i["musica"] for i in self.itens if i["status"] in ("esperando", "processando")}
+            for nome in nomes:
+                if nome in pendentes:
+                    continue
+                self.itens = [i for i in self.itens if i["musica"] != nome]  # tira feitas/erros antigos
+                self.itens.append({"musica": nome, "auto": auto, "modelo": modelo, "modo": modo, "status": "esperando",
+                                   "erro": None, "inicio": None, "fim": None})
+                n += 1
+            self._gravar()
+        self.acordar.set()
+        return n
+
+    def remover(self, nome: str) -> None:
+        with self.trava:
+            self.itens = [i for i in self.itens if not (i["musica"] == nome and i["status"] != "processando")]
+            self._gravar()
+
+    def limpar_concluidas(self) -> None:
+        with self.trava:
+            self.itens = [i for i in self.itens if i["status"] in ("esperando", "processando")]
+            self._gravar()
+
+    def copia(self) -> list[dict[str, Any]]:
+        with self.trava:
+            return json.loads(json.dumps(self.itens))
+
+    def _proximo(self) -> dict[str, Any] | None:
+        with self.trava:
+            for it in self.itens:
+                if it["status"] == "esperando":
+                    it["status"], it["inicio"] = "processando", time.time()
+                    self._gravar()
+                    return it
+        return None
+
+    def _trabalhar(self) -> None:
+        while True:
+            it = self._proximo()
+            if it is None:
+                _manter_acordado(False)
+                self.acordar.wait(5)
+                self.acordar.clear()
+                continue
+            _manter_acordado(True)
+            musica = self.raiz_musicas / it["musica"]
+            if not musica.exists():
+                erro = "arquivo não encontrado"
+            else:
+                TAREFA.iniciar("processar", musica.stem, ETAPAS)
+                _processar(musica, self.raiz_saida, it.get("auto", True), it.get("modelo"), it.get("modo", "simples"))
+                erro = TAREFA.copia().get("erro")
+            with self.trava:
+                it["status"], it["erro"], it["fim"] = ("erro" if erro else "feita"), erro, time.time()
+                self._gravar()
+
+
+FILA = Fila()
+
+
+def _manter_acordado(sim: bool) -> None:
+    """No Windows, impede o PC de entrar em suspensão enquanto a fila trabalha (a tela pode apagar)."""
+    if sys.platform != "win32":
+        return
     try:
-        import numpy as np
+        import ctypes
 
-        from .audio_io import salvar
-        from .mix import mixar
-
-        base = projeto / "preset_web.yaml"
-        if not base.exists():
-            base = projeto / "preset_sugerido.yaml"
-        preset = cfgmod.carregar_preset(base if base.exists() else None)
-        m = preset["mix"]
-        for chave in ("velocidade", "tom_semitons", "lufs_alvo", "formato", "fonte"):
-            if pedido.get(chave) not in (None, ""):
-                m[chave] = pedido[chave]
-
-        conf = pedido.get("faixas", {})
-        bat = conf.get("bateria", {})
-        m["bateria_guia_db"] = None if bat.get("mudo", True) else float(bat.get("volume_db", -18))
-        for nome, c in conf.items():
-            if nome == "bateria":
-                continue
-            f = preset.setdefault("faixas", {}).setdefault(nome, {})
-            f["mudo"] = bool(c.get("mudo"))
-            f["volume_mix_db"] = float(c.get("volume_db", 0))
-            if "pan" in c:
-                f["pan"] = float(c["pan"])
-
-        TAREFA.progresso("carregar", 0.2)
-        sub = pedido.get("conjunto") or ("limpas" if (projeto / "limpas").exists() else "stems")
-        faixas, sr = pl.carregar_stems(projeto, sub)
-        TAREFA.progresso("carregar", 1)
-        for nome in list(faixas):
-            if nome == "bateria":  # a bateria só entra como guia, no volume de bateria_guia_db
-                continue
-            db =float(conf.get(nome, {}).get("volume_db", 0))
-            if db:
-                faixas[nome] = (faixas[nome] * (10 ** (db / 20))).astype(np.float32)
-        cfg_faixas = {n: cfgmod.config_da_faixa(preset, n) for n in faixas}
-        TAREFA.progresso("mixar", 0.3)
-        final = mixar(faixas, sr, cfg_faixas, m)
-        TAREFA.progresso("mixar", 0.8)
-
-        nome = (pedido.get("nome") or f"{projeto.name} - minha mix").strip()
-        nome = re.sub(r'[\\/:*?"<>|]+', "_", nome)
-        destino = projeto / f"{nome}.{m.get('formato', 'wav')}"
-        salvar(destino, final, sr)
-        cfgmod.salvar_preset(preset, projeto / "preset_web.yaml")
-        print(f"[salvar] Pronto: {destino}")
-        TAREFA.terminar({"projeto": projeto.name, "arquivo": destino.name})
-    except Exception as e:  # noqa: BLE001
-        traceback.print_exc()
-        TAREFA.terminar(erro=f"{type(e).__name__}: {e}")
+        es_continuous, es_system_required = 0x80000000, 0x00000001
+        ctypes.windll.kernel32.SetThreadExecutionState(es_continuous | (es_system_required if sim else 0))
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # --------------------------------------------------------------------------- servidor
@@ -206,7 +308,7 @@ class App:
                 out.append({
                     "nome": p.name,
                     "tamanho_mb": round(p.stat().st_size / 1e6, 1),
-                    "processada": any((proj / "stems").glob("*.wav")),
+                    "processada": bool(achar_faixas(proj / "stems")),
                 })
         return out
 
@@ -217,10 +319,11 @@ class App:
             return "/arquivo/" + quote(nome) + "/" + quote(p.relative_to(proj).as_posix())
 
         conjuntos = {}
-        for sub in ("stems", "limpas"):
+        for sub in ("limpas", "stems", "stems_roformer", "stems_demucs"):
             pasta = proj / sub
-            if pasta.exists():
-                conjuntos[sub] = [{"nome": p.stem, "url": url(p)} for p in sorted(pasta.glob("*.wav"))]
+            if achar_faixas(pasta):
+                conjuntos[sub] = [{"nome": p.stem, "url": url(p)} for p in achar_faixas(pasta)]
+        duplo = "stems_roformer" in conjuntos
         finais = [
             {"nome": p.name, "url": url(p), "mb": round(p.stat().st_size / 1e6, 1)}
             for p in sorted(proj.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True)
@@ -243,6 +346,7 @@ class App:
         return {
             "nome": nome,
             "conjuntos": conjuntos,
+            "duplo": duplo,
             "finais": finais,
             "original": ("/musica/" + quote(original.name)) if original else None,
             "analise": analise,
@@ -330,7 +434,9 @@ def _handler(app: App):
                 if caminho == "/api/musicas":
                     return self._json(app.listar_musicas())
                 if caminho == "/api/status":
-                    return self._json(TAREFA.copia())
+                    e = TAREFA.copia()
+                    e["fila"] = FILA.copia()
+                    return self._json(e)
                 if caminho.startswith("/api/projeto/"):
                     return self._json(app.info_projeto(caminho[len("/api/projeto/"):]))
                 if caminho.startswith("/arquivo/"):
@@ -363,26 +469,39 @@ def _handler(app: App):
                             resta -= len(bloco)
                     return self._json({"ok": True, "nome": nome})
 
-                if TAREFA.copia().get("rodando") and u.path in ("/api/processar", "/api/salvar"):
-                    return self._json({"erro": "Já tem uma tarefa rodando. Espere terminar."}, 409)
-
-                if u.path == "/api/processar":
+                if u.path == "/api/processar":  # compatível: põe uma música na fila
                     d = self._corpo_json()
-                    musica = app.caminho_seguro(app.musicas, d["musica"])
-                    TAREFA.iniciar("processar", musica.stem, ETAPAS)
-                    threading.Thread(
-                        target=_processar,
-                        args=(musica, app.saida, bool(d.get("auto", True)), d.get("modelo")),
-                        daemon=True,
-                    ).start()
+                    app.caminho_seguro(app.musicas, d["musica"])
+                    FILA.adicionar([d["musica"]], bool(d.get("auto", True)), d.get("modelo"), d.get("modo", "duplo"))
+                    return self._json({"ok": True})
+
+                if u.path == "/api/fila/adicionar":
+                    d = self._corpo_json()
+                    nomes = d.get("musicas")
+                    if nomes == "todas":  # todas as que ainda não foram processadas
+                        nomes = [m["nome"] for m in app.listar_musicas() if not m["processada"]]
+                    for n in nomes:
+                        app.caminho_seguro(app.musicas, n)
+                    n = FILA.adicionar(nomes, bool(d.get("auto", True)), d.get("modelo"), d.get("modo", "duplo"))
+                    return self._json({"ok": True, "adicionadas": n})
+
+                if u.path == "/api/fila/remover":
+                    FILA.remover(self._corpo_json()["musica"])
+                    return self._json({"ok": True})
+
+                if u.path == "/api/fila/limpar":
+                    FILA.limpar_concluidas()
                     return self._json({"ok": True})
 
                 if u.path == "/api/salvar":
                     d = self._corpo_json()
                     proj = app._projeto(d["projeto"])
-                    TAREFA.iniciar("salvar", proj.name, [("carregar", 0.4), ("mixar", 0.6)])
-                    threading.Thread(target=_salvar_mix, args=(proj, d), daemon=True).start()
-                    return self._json({"ok": True})
+                    try:
+                        destino = _salvar_mix(proj, d)
+                    except Exception as e:  # noqa: BLE001
+                        traceback.print_exc()
+                        return self._json({"erro": f"{type(e).__name__}: {e}"}, 500)
+                    return self._json({"ok": True, "arquivo": destino.name})
                 self._json({"erro": "não encontrado"}, 404)
             except (FileNotFoundError, KeyError) as e:
                 self._json({"erro": f"não encontrado: {e}"}, 404)
@@ -394,6 +513,7 @@ def rodar(porta: int = 8765, musicas: str = "musicas", saida: str = "saida", abr
     if not isinstance(sys.stdout, _Tee):
         sys.stdout = _Tee(sys.stdout)
     app = App(Path(musicas), Path(saida))
+    FILA.configurar(app.musicas, app.saida)
     srv = ThreadingHTTPServer(("127.0.0.1", porta), _handler(app))
     url = f"http://localhost:{porta}"
     print(f"VS-Batera painel em {url}  (Ctrl+C para sair)")
