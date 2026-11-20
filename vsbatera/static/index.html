@@ -115,6 +115,11 @@
       <h2>Músicas</h2>
       <div id="soltar">Arraste uma música aqui<br><small>ou clique para escolher (mp3, wav, flac, m4a)</small></div>
       <input type="file" id="arquivo" accept="audio/*" hidden>
+      <div style="display:flex;gap:6px;margin:8px 0 4px">
+        <input type="url" id="yt-link" placeholder="ou cole um link do YouTube" style="flex:1;min-width:0">
+        <button id="yt-baixar">Baixar</button>
+      </div>
+      <div id="yt-status" class="dica" style="margin:0 0 8px"></div>
       <label class="dica" style="display:flex;gap:6px;align-items:center;margin:0 0 4px">
         <input type="checkbox" id="auto" checked> calibração automática
       </label>
@@ -250,6 +255,37 @@ async function enviar(f) {
   soltar.innerHTML = 'Arraste uma música aqui<br><small>ou clique para escolher (mp3, wav, flac, m4a)</small>';
   carregarMusicas();
 }
+
+// youtube: baixa o áudio do link e já põe na fila
+let timerYt = null;
+$("yt-baixar").onclick = async () => {
+  const url = $("yt-link").value.trim();
+  if (!url) return;
+  try {
+    await api("/api/youtube", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url, fila: true, auto: $("auto").checked, modo: $("duplo").checked ? "duplo" : "simples" }) });
+    $("yt-link").value = "";
+    if (!timerYt) timerYt = setInterval(atualizarYt, 1500);
+    atualizarYt();
+  } catch (e) { alert(e.message); }
+};
+$("yt-link").onkeydown = (e) => { if (e.key === "Enter") $("yt-baixar").click(); };
+async function atualizarYt() {
+  let lista;
+  try { lista = await api("/api/youtube"); } catch (_) { return; }
+  const ativos = lista.filter(i => i.status === "começando" || i.status === "baixando");
+  $("yt-status").innerHTML = lista.slice(-4).reverse().map(i => {
+    const nome = i.nome || i.url;
+    const st = { "começando": "⏳ começando", baixando: `⬇️ baixando ${i.pct}%`, pronto: "✅ baixada",
+                 "na fila": "✅ baixada e na fila", erro: "⚠️ erro: " + (i.erro || "") }[i.status] || i.status;
+    return `<div title="${i.url}">${st} · ${nome.replace(/</g, "&lt;")}</div>`;
+  }).join("");
+  if (!ativos.length && timerYt) {
+    clearInterval(timerYt); timerYt = null;
+    carregarMusicas(); acompanhar();
+  }
+}
+atualizarYt();
 
 // ------------------------------------------------------------------ progresso
 let timerStatus = null;

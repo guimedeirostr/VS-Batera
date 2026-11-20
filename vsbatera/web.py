@@ -433,6 +433,8 @@ def _handler(app: App):
                     return self._arquivo(STATIC / "index.html")
                 if caminho == "/api/musicas":
                     return self._json(app.listar_musicas())
+                if caminho == "/api/youtube":
+                    return self._json(DOWNLOADS)
                 if caminho == "/api/status":
                     e = TAREFA.copia()
                     e["fila"] = FILA.copia()
@@ -468,6 +470,20 @@ def _handler(app: App):
                             f.write(bloco)
                             resta -= len(bloco)
                     return self._json({"ok": True, "nome": nome})
+
+                if u.path == "/api/youtube":
+                    d = self._corpo_json()
+                    url = str(d.get("url", "")).strip()
+                    if not re.match(r"^https?://", url):
+                        return self._json({"erro": "cole um link começando com https://"}, 400)
+                    item = {"id": int(time.time() * 1000), "url": url, "status": "começando", "pct": 0,
+                            "nome": None, "erro": None, "fila": bool(d.get("fila", True)),
+                            "auto": bool(d.get("auto", True)), "modo": d.get("modo", "duplo")}
+                    with _LOCK_DL:
+                        DOWNLOADS.append(item)
+                        del DOWNLOADS[:-20]
+                    threading.Thread(target=_baixar_link, args=(app, item), daemon=True).start()
+                    return self._json({"ok": True, "id": item["id"]})
 
                 if u.path == "/api/processar":  # compatível: põe uma música na fila
                     d = self._corpo_json()
@@ -507,6 +523,29 @@ def _handler(app: App):
                 self._json({"erro": f"não encontrado: {e}"}, 404)
 
     return H
+
+
+# --------------------------------------------------------------------------- links do YouTube
+DOWNLOADS: list[dict[str, Any]] = []
+_LOCK_DL = threading.Lock()
+
+
+def _baixar_link(app: "App", item: dict[str, Any]) -> None:
+    from .youtube import baixar
+
+    def prog(f: float) -> None:
+        item["pct"] = round(f * 100)
+
+    try:
+        item["status"] = "baixando"
+        destino = baixar(item["url"], app.musicas, prog)
+        item.update(status="pronto", nome=destino.name, pct=100)
+        if item.get("fila"):
+            FILA.adicionar([destino.name], item.get("auto", True), None, item.get("modo", "duplo"))
+            item["status"] = "na fila"
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        item.update(status="erro", erro=f"{type(e).__name__}: {e}"[:300])
 
 
 def rodar(porta: int = 8765, musicas: str = "musicas", saida: str = "saida", abrir: bool = True) -> None:
