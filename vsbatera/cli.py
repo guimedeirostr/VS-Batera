@@ -10,6 +10,7 @@ Exemplos:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -60,6 +61,9 @@ def _add_trecho(p):
 
 
 def main(argv: list[str] | None = None) -> int:
+    for fluxo in (sys.stdout, sys.stderr):  # console do Windows (cp1252) não quebra com acentos/símbolos
+        if hasattr(fluxo, "reconfigure"):
+            fluxo.reconfigure(errors="replace")
     ap = argparse.ArgumentParser(prog="vsbatera", description="Separa a música e gera a versão sem bateria.")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -92,7 +96,18 @@ def main(argv: list[str] | None = None) -> int:
     _add_sep(p)
     _add_mix(p)
 
+    p = sub.add_parser("web", help="abre o painel no navegador: progresso em %%, faixa por faixa e salvar")
+    p.add_argument("--porta", type=int, default=int(os.environ.get("PORT", 8765)))
+    p.add_argument("--musicas", default="musicas", help="pasta com as músicas (padrão: musicas/)")
+    p.add_argument("-o", "--saida", default="saida")
+    p.add_argument("--sem-abrir", action="store_true", help="não abre o navegador automaticamente")
+
     args = ap.parse_args(argv)
+    if args.cmd == "web":
+        from .web import rodar
+
+        rodar(args.porta, args.musicas, args.saida, abrir=not args.sem_abrir)
+        return 0
     preset = _preset(args)
 
     if args.cmd == "separar":

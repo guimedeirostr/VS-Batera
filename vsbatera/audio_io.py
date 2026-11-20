@@ -28,13 +28,24 @@ def carregar(caminho: str | Path, sr_alvo: int | None = None) -> tuple[np.ndarra
     return np.ascontiguousarray(audio, dtype=np.float32), sr
 
 
+def _ffmpeg() -> str:
+    """ffmpeg do sistema ou, se não houver, o que vem no pacote imageio-ffmpeg."""
+    achado = shutil.which("ffmpeg")
+    if achado:
+        return achado
+    try:
+        import imageio_ffmpeg
+
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError("ffmpeg não encontrado. Instale o ffmpeg ou rode: pip install imageio-ffmpeg") from e
+
+
 def _carregar_ffmpeg(caminho: Path) -> tuple[np.ndarray, int]:
-    if not shutil.which("ffmpeg"):
-        raise RuntimeError(f"Não consegui ler {caminho} e o ffmpeg não está instalado.")
     with tempfile.TemporaryDirectory() as tmp:
         wav = Path(tmp) / "decod.wav"
         subprocess.run(
-            ["ffmpeg", "-y", "-loglevel", "error", "-i", str(caminho), "-ac", "2", "-ar", "44100", str(wav)],
+            [_ffmpeg(), "-y", "-loglevel", "error", "-i", str(caminho), "-ac", "2", "-ar", "44100", str(wav)],
             check=True,
         )
         return sf.read(str(wav), dtype="float32", always_2d=True)
@@ -58,7 +69,7 @@ def salvar(caminho: str | Path, audio: np.ndarray, sr: int, bits: int = 24) -> P
             wav = Path(tmp) / "x.wav"
             sf.write(str(wav), audio.T, sr, subtype="PCM_24")
             subprocess.run(
-                ["ffmpeg", "-y", "-loglevel", "error", "-i", str(wav), "-b:a", "320k", str(caminho)], check=True
+                [_ffmpeg(), "-y", "-loglevel", "error", "-i", str(wav), "-b:a", "320k", str(caminho)], check=True
             )
         return caminho
     subtype = {16: "PCM_16", 24: "PCM_24", 32: "FLOAT"}[bits]

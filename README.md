@@ -37,7 +37,8 @@ que a IA não pegou fica lá. Você escolhe com `--fonte residual` ou `--fonte f
 
 ## Instalação (no seu computador)
 
-Requer Python 3.10+ e [ffmpeg](https://ffmpeg.org/) (para ler MP3/M4A e exportar MP3).
+Requer Python 3.10+. O ffmpeg (para ler MP3/M4A e exportar MP3) já vem pelo pacote `imageio-ffmpeg`;
+se você tiver o [ffmpeg](https://ffmpeg.org/) instalado no sistema, ele é usado no lugar.
 
 ```bash
 git clone <este repositório> && cd VS-Batera
@@ -49,6 +50,8 @@ pip install -e ".[roformer]"         # (opcional) modelos BS-RoFormer/MDX do UVR
 
 - **GPU NVIDIA**: instale o PyTorch com CUDA (https://pytorch.org) — fica ~10× mais rápido.
 - **Mac M1/M2/M3**: usa `mps` automaticamente.
+- **Windows**: se der `WinError 126` ao carregar o torch, instale o
+  [Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe) mais recente.
 - Na primeira execução o Demucs baixa os pesos do modelo (~300 MB para o `htdemucs_ft`).
 
 ## Uso rápido
@@ -62,6 +65,18 @@ vsbatera mixar saida/minha_musica --velocidade 0.8 --guia -22
 ```
 
 Resultado em `saida/minha_musica/minha_musica - sem bateria.wav`.
+
+## Painel no navegador
+
+```bash
+vsbatera web            # abre http://localhost:8765
+```
+
+- **Processar** uma música (arraste o arquivo) acompanhando a **% de cada etapa**, tempo e estimativa.
+- **Faixa por faixa**: forma de onda, volume (dB), mudo (M), solo (S) e download de cada faixa;
+  compare faixas limpas × cruas e com a música original.
+- **Salvar mix** com os volumes do mixer, em WAV/MP3/FLAC e na velocidade de estudo (100% a 60%).
+  Os ajustes ficam em `saida/<música>/preset_web.yaml` e voltam quando você abre a música de novo.
 
 ## Fluxo de calibração (pra chegar no "som perfeito")
 

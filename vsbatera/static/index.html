@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VS-Batera</title>
+<style>
+  :root {
+    --bg: #0f1115; --painel: #171a21; --painel2: #1e222b; --borda: #2a2f3a;
+    --texto: #e7e9ee; --fraco: #8b93a5; --acento: #ff7a1a; --acento2: #ffb066;
+    --ok: #3ecf8e; --erro: #ff5d5d;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--texto);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 14px 24px;
+           border-bottom: 1px solid var(--borda); background: var(--painel); }
+  header h1 { font-size: 18px; margin: 0; letter-spacing: .3px; }
+  header .sub { color: var(--fraco); font-size: 13px; }
+  main { display: grid; grid-template-columns: 300px 1fr; gap: 20px; padding: 20px 24px; max-width: 1400px; margin: 0 auto; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--painel); border: 1px solid var(--borda); border-radius: 10px; padding: 16px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .8px; color: var(--fraco); margin: 0 0 12px; font-weight: 600; }
+  button { background: var(--painel2); color: var(--texto); border: 1px solid var(--borda); border-radius: 6px;
+           padding: 6px 12px; font: inherit; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--fraco); }
+  button:disabled { opacity: .45; cursor: default; }
+  button.prim { background: var(--acento); border-color: var(--acento); color: #111; font-weight: 600; }
+  button.prim:hover:not(:disabled) { background: var(--acento2); }
+  input, select { background: var(--painel2); color: var(--texto); border: 1px solid var(--borda); border-radius: 6px; padding: 6px 8px; font: inherit; }
+  .coluna { display: flex; flex-direction: column; gap: 20px; }
+
+  /* músicas */
+  #soltar { border: 1.5px dashed var(--borda); border-radius: 8px; padding: 14px; text-align: center; color: var(--fraco);
+            cursor: pointer; margin-bottom: 12px; }
+  #soltar.sobre { border-color: var(--acento); color: var(--texto); }
+  .musica { padding: 10px; border-radius: 8px; border: 1px solid transparent; margin-bottom: 6px; background: var(--painel2); }
+  .musica.ativa { border-color: var(--acento); }
+  .musica .nome { font-weight: 600; word-break: break-word; }
+  .musica .meta { color: var(--fraco); font-size: 12px; margin: 2px 0 8px; }
+  .musica .acoes { display: flex; gap: 6px; }
+  .vazio { color: var(--fraco); font-size: 13px; }
+
+  /* progresso */
+  #progresso[hidden] { display: none; }
+  .grande { display: flex; align-items: baseline; gap: 12px; margin-bottom: 8px; }
+  .grande .pct { font-size: 40px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .grande .info { color: var(--fraco); }
+  .barra { height: 10px; background: var(--painel2); border-radius: 99px; overflow: hidden; }
+  .barra > div { height: 100%; width: 0; background: linear-gradient(90deg, var(--acento), var(--acento2)); transition: width .4s; }
+  .barra.fina { height: 6px; }
+  .etapas { display: grid; grid-template-columns: 110px 1fr 52px; gap: 8px 12px; align-items: center; margin-top: 14px; }
+  .etapas .rot { color: var(--fraco); }
+  .etapas .rot.atual { color: var(--texto); font-weight: 600; }
+  .etapas .num { text-align: right; font-variant-numeric: tabular-nums; color: var(--fraco); }
+  #log { margin-top: 12px; max-height: 120px; overflow: auto; background: #0b0d10; border-radius: 6px; padding: 8px 10px;
+         font: 12px/1.5 ui-monospace, Consolas, monospace; color: #aab2c2; white-space: pre-wrap; }
+  .erro { color: var(--erro); }
+
+  /* mixer */
+  .topo-mixer { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .topo-mixer .titulo { font-size: 16px; font-weight: 600; margin-right: auto; }
+  .transporte { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .transporte .tempo { font-variant-numeric: tabular-nums; color: var(--fraco); min-width: 110px; }
+  #play { width: 44px; height: 36px; font-size: 16px; }
+  #busca { flex: 1; accent-color: var(--acento); }
+  .faixa { display: grid; grid-template-columns: 130px 1fr 210px; gap: 12px; align-items: center;
+           padding: 8px 0; border-top: 1px solid var(--borda); }
+  .faixa .cab { display: flex; align-items: center; gap: 8px; }
+  .faixa .cor { width: 10px; height: 34px; border-radius: 3px; }
+  .faixa .nm { font-weight: 600; text-transform: capitalize; }
+  .faixa .nm small { display: block; font-weight: 400; color: var(--fraco); text-transform: none; font-size: 11px; }
+  .faixa canvas { width: 100%; height: 48px; display: block; cursor: pointer; background: var(--painel2); border-radius: 4px; }
+  .faixa.calada canvas { opacity: .35; }
+  .ctl { display: flex; align-items: center; gap: 6px; }
+  .ctl input[type=range] { width: 90px; accent-color: var(--acento); }
+  .ctl .db { width: 44px; text-align: right; font-variant-numeric: tabular-nums; color: var(--fraco); font-size: 12px; }
+  .ms { width: 28px; padding: 4px 0; font-weight: 700; font-size: 12px; }
+  .ms.m.on { background: #c33; border-color: #c33; }
+  .ms.s.on { background: #d6b200; border-color: #d6b200; color: #111; }
+  .baixar { color: var(--fraco); text-decoration: none; font-size: 16px; padding: 0 2px; }
+  .baixar:hover { color: var(--texto); }
+  #carregando { color: var(--fraco); padding: 20px 0; }
+
+  .salvar { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--borda); }
+  .salvar label { display: flex; flex-direction: column; gap: 4px; color: var(--fraco); font-size: 12px; }
+  .salvar input[type=text] { width: 260px; }
+  .finais { margin-top: 16px; }
+  .final { display: flex; align-items: center; gap: 10px; padding: 6px 0; }
+  .final .n { flex: 0 0 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .final audio { flex: 1; height: 32px; }
+  .dica { color: var(--fraco); font-size: 12px; margin-top: 8px; }
+  .aviso { background: #2a2216; border: 1px solid #5a4422; color: #f3c58d; padding: 8px 10px; border-radius: 6px; margin-bottom: 12px; font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <span style="font-size:22px">🥁</span>
+  <h1>VS-Batera</h1>
+  <span class="sub">separa os instrumentos, limpa e gera a versão sem bateria</span>
+</header>
+
+<main>
+  <div class="coluna">
+    <section>
+      <h2>Músicas</h2>
+      <div id="soltar">Arraste uma música aqui<br><small>ou clique para escolher (mp3, wav, flac, m4a)</small></div>
+      <input type="file" id="arquivo" accept="audio/*" hidden>
+      <label class="dica" style="display:flex;gap:6px;align-items:center;margin:0 0 10px">
+        <input type="checkbox" id="auto" checked> calibração automática
+      </label>
+      <div id="lista"><div class="vazio">Carregando…</div></div>
+    </section>
+  </div>
+
+  <div class="coluna">
+    <section id="progresso" hidden>
+      <h2 id="prog-titulo">Processando</h2>
+      <div class="grande"><span class="pct" id="pct">0%</span><span class="info" id="prog-info"></span></div>
+      <div class="barra"><div id="barra-total"></div></div>
+      <div class="etapas" id="etapas"></div>
+      <div id="log"></div>
+    </section>
+
+    <section id="mixer">
+      <div class="vazio" id="mixer-vazio">Escolha uma música processada para ouvir faixa por faixa.</div>
+      <div id="mixer-corpo" hidden>
+        <div class="topo-mixer">
+          <span class="titulo" id="mix-titulo"></span>
+          <label class="dica" style="margin:0">Faixas:
+            <select id="conjunto"></select>
+          </label>
+          <button id="ouvir-original" title="Alterna entre o mixer e a música original">Ouvir original</button>
+        </div>
+        <div class="transporte">
+          <button id="play" class="prim" title="Tocar / pausar (barra de espaço)">▶</button>
+          <button id="parar" title="Voltar ao início">■</button>
+          <span class="tempo" id="tempo">0:00 / 0:00</span>
+          <input type="range" id="busca" min="0" max="1000" value="0">
+        </div>
+        <div id="carregando"></div>
+        <div id="faixas"></div>
+
+        <div class="salvar">
+          <label>Nome do arquivo<input type="text" id="nome-saida"></label>
+          <label>Formato
+            <select id="formato"><option>wav</option><option>mp3</option><option>flac</option></select>
+          </label>
+          <label>Velocidade
+            <select id="velocidade">
+              <option value="1">100%</option><option value="0.9">90%</option><option value="0.8">80%</option>
+              <option value="0.75">75%</option><option value="0.7">70%</option><option value="0.6">60%</option>
+            </select>
+          </label>
+          <button class="prim" id="salvar">💾 Salvar mix</button>
+        </div>
+        <div class="dica">O arquivo é salvo com os volumes, mudos e solos que estão no mixer. A bateria entra como guia só se não estiver no mudo.</div>
+
+        <div class="finais">
+          <h2 style="margin-top:18px">Arquivos salvos</h2>
+          <div id="finais"></div>
+        </div>
+      </div>
+    </section>
+  </div>
+</main>
+
+<script>
+const CORES = { bateria: "#ff5d5d", baixo: "#4ea1ff", voz: "#e07bff", guitarra: "#ffb04e",
+                teclado: "#3ecf8e", outros: "#9aa4b8", instrumental: "#7ad3e0" };
+const ROTULOS = { separar: "Separar (IA)", analisar: "Analisar", limpar: "Limpar faixas", mixar: "Mixar", carregar: "Carregar faixas" };
+const $ = (id) => document.getElementById(id);
+const api = async (url, opts) => { const r = await fetch(url, opts); const j = await r.json(); if (!r.ok) throw new Error(j.erro || r.status); return j; };
+const fmt = (s) => { s = Math.max(0, s || 0); return Math.floor(s / 60) + ":" + String(Math.floor(s % 60)).padStart(2, "0"); };
+
+let projetoAtual = null, infoAtual = null, ultimoEstado = null;
+
+// ------------------------------------------------------------------ músicas
+async function carregarMusicas() {
+  const lista = await api("/api/musicas");
+  const el = $("lista");
+  if (!lista.length) { el.innerHTML = '<div class="vazio">Nenhuma música ainda.</div>'; return; }
+  el.innerHTML = "";
+  const rodando = ultimoEstado && ultimoEstado.rodando;
+  for (const m of lista) {
+    const stem = m.nome.replace(/\.[^.]+$/, "");
+    const d = document.createElement("div");
+    d.className = "musica" + (stem === projetoAtual ? " ativa" : "");
+    d.innerHTML = `<div class="nome"></div><div class="meta">${m.tamanho_mb} MB · ${m.processada ? "✅ processada" : "não processada"}</div>
+      <div class="acoes"></div>`;
+    d.querySelector(".nome").textContent = stem;
+    const acoes = d.querySelector(".acoes");
+    if (m.processada) {
+      const b = document.createElement("button"); b.className = "prim"; b.textContent = "Abrir faixas";
+      b.onclick = () => abrirProjeto(stem); acoes.append(b);
+    }
+    const p = document.createElement("button"); p.textContent = m.processada ? "Reprocessar" : "Processar";
+    if (!m.processada) p.className = "prim";
+    p.disabled = rodando;
+    p.onclick = () => processar(m.nome, m.processada);
+    acoes.append(p);
+    el.append(d);
+  }
+}
+
+async function processar(nome, jaFeita) {
+  if (jaFeita && !confirm("Separar de novo? Isso substitui as faixas atuais dessa música.")) return;
+  try {
+    await api("/api/processar", { method: "POST", body: JSON.stringify({ musica: nome, auto: $("auto").checked }) });
+    acompanhar();
+  } catch (e) { alert(e.message); }
+}
+
+// upload
+const soltar = $("soltar");
+soltar.onclick = () => $("arquivo").click();
+$("arquivo").onchange = (e) => e.target.files[0] && enviar(e.target.files[0]);
+soltar.ondragover = (e) => { e.preventDefault(); soltar.classList.add("sobre"); };
+soltar.ondragleave = () => soltar.classList.remove("sobre");
+soltar.ondrop = (e) => { e.preventDefault(); soltar.classList.remove("sobre"); e.dataTransfer.files[0] && enviar(e.dataTransfer.files[0]); };
+async function enviar(f) {
+  soltar.textContent = "Enviando " + f.name + "…";
+  try { await api("/api/upload?nome=" + encodeURIComponent(f.name), { method: "POST", body: f }); }
+  catch (e) { alert(e.message); }
+  soltar.innerHTML = 'Arraste uma música aqui<br><small>ou clique para escolher (mp3, wav, flac, m4a)</small>';
+  carregarMusicas();
+}
+
+// ------------------------------------------------------------------ progresso
+let timerStatus = null;
+function acompanhar() { if (!timerStatus) { timerStatus = setInterval(atualizarStatus, 1000); } atualizarStatus(); }
+async function atualizarStatus() {
+  const e = await api("/api/status");
+  const antes = ultimoEstado;
+  ultimoEstado = e;
+  if (!e.tipo) { $("progresso").hidden = true; clearInterval(timerStatus); timerStatus = null; return; }
+  $("progresso").hidden = false;
+  $("prog-titulo").textContent = (e.tipo === "salvar" ? "Salvando mix · " : "Processando · ") + e.projeto;
+  $("pct").textContent = Math.floor(e.pct_total) + "%";
+  $("barra-total").style.width = e.pct_total + "%";
+  const decorrido = ((e.fim || Date.now() / 1000) - e.inicio);
+  let info = "tempo: " + fmt(decorrido);
+  if (e.rodando && e.pct_total > 2) info += " · falta ~" + fmt(decorrido * (100 - e.pct_total) / e.pct_total);
+  if (!e.rodando) info = e.erro ? "" : "concluído em " + fmt(decorrido);
+  $("prog-info").innerHTML = e.erro ? `<span class="erro">Erro: ${e.erro.replace(/</g, "&lt;")}</span>` : info;
+  $("etapas").innerHTML = e.etapas.map(s => `
+      <span class="rot ${s.nome === e.etapa && e.rodando ? "atual" : ""}">${ROTULOS[s.nome] || s.nome}</span>
+      <div class="barra fina"><div style="width:${s.pct}%"></div></div>
+      <span class="num">${Math.floor(s.pct)}%</span>`).join("");
+  const log = $("log"); const noFim = log.scrollTop + log.clientHeight >= log.scrollHeight - 5;
+  log.textContent = e.log.join("\n"); if (noFim) log.scrollTop = log.scrollHeight;
+
+  if (!e.rodando) {
+    clearInterval(timerStatus); timerStatus = null;
+    if (antes && antes.rodando && !e.erro) {
+      await carregarMusicas();
+      if (e.tipo === "processar" || e.projeto !== projetoAtual) abrirProjeto(e.projeto);
+      else atualizarFinais();
+    }
+  }
+  if (!antes || antes.rodando !== e.rodando) carregarMusicas();
+}
+
+// ------------------------------------------------------------------ mixer (Web Audio)
+const ctx = new (window.AudioContext || window.webkitAudioContext)();
+const mestre = ctx.createGain(); mestre.connect(ctx.destination);
+let faixas = [];           // {nome, buffer, gain, vol_db, mudo, solo, canvas, picos, url}
+let tocando = false, inicioCtx = 0, posicao = 0, duracao = 0, fontes = [];
+let elOriginal = null, modoOriginal = false;
+
+async function abrirProjeto(nome) {
+  pararTudo(); posicao = 0;
+  projetoAtual = nome;
+  carregarMusicas();
+  infoAtual = await api("/api/projeto/" + encodeURIComponent(nome));
+  $("mixer-vazio").hidden = true; $("mixer-corpo").hidden = false;
+  $("mix-titulo").textContent = nome;
+  $("nome-saida").value = nome + " - minha mix";
+  const sel = $("conjunto"); sel.innerHTML = "";
+  const nomes = { limpas: "Limpas (com limpeza)", stems: "Cruas (saída da IA)" };
+  for (const k of ["limpas", "stems"]) if (infoAtual.conjuntos[k]) sel.add(new Option(nomes[k], k));
+  sel.onchange = () => carregarConjunto(sel.value);
+  const s = infoAtual.salvo || {};
+  if (s.formato) $("formato").value = s.formato;
+  if (s.velocidade) $("velocidade").value = String(s.velocidade);
+  if (elOriginal) elOriginal.pause();
+  elOriginal = infoAtual.original ? new Audio(infoAtual.original) : null;
+  $("ouvir-original").disabled = !elOriginal; modoOriginal = false; atualizarBotaoOriginal();
+  atualizarFinais();
+  await carregarConjunto(sel.value);
+}
+
+async function carregarConjunto(conj) {
+  const lista = infoAtual.conjuntos[conj] || [];
+  pararTudo();
+  const anterior = Object.fromEntries(faixas.map(f => [f.nome, f]));
+  faixas = []; $("faixas").innerHTML = "";
+  const ordem = ["voz", "guitarra", "teclado", "baixo", "outros", "instrumental", "bateria"];
+  lista.sort((a, b) => (ordem.indexOf(a.nome) + 99) % 99 - (ordem.indexOf(b.nome) + 99) % 99);
+  let n = 0;
+  $("carregando").textContent = `Carregando faixas 0/${lista.length}…`;
+  const salvo = (infoAtual.salvo && infoAtual.salvo.faixas) || {};
+  const carregadas = await Promise.all(lista.map(async (t) => {
+    const buf = await fetch(t.url).then(r => r.arrayBuffer()).then(b => ctx.decodeAudioData(b));
+    $("carregando").textContent = `Carregando faixas ${++n}/${lista.length}…`;
+    return { t, buf };
+  }));
+  $("carregando").textContent = "";
+  duracao = 0;
+  for (const { t, buf } of carregadas) {
+    const ant = anterior[t.nome], sv = salvo[t.nome];
+    const f = { nome: t.nome, url: t.url, buffer: buf, gain: ctx.createGain(),
+                vol_db: ant ? ant.vol_db : (t.nome === "bateria" ? (infoAtual.salvo.guia_db ?? -18) : (sv ? sv.volume_db : 0)),
+                mudo: ant ? ant.mudo : (t.nome === "bateria" ? infoAtual.salvo.guia_db == null : !!(sv && sv.mudo)),
+                solo: ant ? ant.solo : false };
+    f.gain.connect(mestre);
+    f.picos = picos(buf, 1200);
+    duracao = Math.max(duracao, buf.duration);
+    faixas.push(f);
+    $("faixas").append(linhaFaixa(f));
+  }
+  aplicarGanhos(); desenharTudo(); atualizarTempo();
+}
+
+function picos(buf, n) {
+  const d0 = buf.getChannelData(0), d1 = buf.numberOfChannels > 1 ? buf.getChannelData(1) : d0;
+  const passo = Math.floor(d0.length / n) || 1, out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    let m = 0; const a = i * passo, b = Math.min(d0.length, a + passo);
+    for (let j = a; j < b; j += 16) { const v = Math.max(Math.abs(d0[j]), Math.abs(d1[j])); if (v > m) m = v; }
+    out[i] = m;
+  }
+  return out;
+}
+
+function linhaFaixa(f) {
+  const el = document.createElement("div"); el.className = "faixa"; f.el = el;
+  const pa = analiseDe(f.nome);
+  el.innerHTML = `
+    <div class="cab"><span class="cor" style="background:${CORES[f.nome] || "#888"}"></span>
+      <span class="nm">${f.nome}<small>${pa}</small></span></div>
+    <canvas></canvas>
+    <div class="ctl">
+      <button class="ms m" title="Mudo">M</button><button class="ms s" title="Solo">S</button>
+      <input type="range" min="-40" max="6" step="0.5"><span class="db"></span>
+      <a class="baixar" title="Baixar esta faixa" href="${f.url}?baixar=1">⤓</a>
+    </div>`;
+  f.canvas = el.querySelector("canvas");
+  const r = el.querySelector("input"), db = el.querySelector(".db");
+  r.value = f.vol_db; db.textContent = fmtDb(f.vol_db);
+  r.oninput = () => { f.vol_db = +r.value; db.textContent = fmtDb(f.vol_db); aplicarGanhos(); };
+  r.ondblclick = () => { r.value = 0; r.oninput(); };
+  el.querySelector(".m").onclick = () => { f.mudo = !f.mudo; aplicarGanhos(); };
+  el.querySelector(".s").onclick = () => { f.solo = !f.solo; aplicarGanhos(); };
+  f.canvas.onclick = (e) => { const b = f.canvas.getBoundingClientRect(); irPara((e.clientX - b.left) / b.width * duracao); };
+  return el;
+}
+const fmtDb = (v) => (v > 0 ? "+" : "") + (+v).toFixed(1) + " dB";
+function analiseDe(nome) {
+  const a = infoAtual.analise && infoAtual.analise[nome];
+  if (!a) return "";
+  let s = `${a.lufs.toFixed(1)} LUFS`;
+  if (a.vazamento_bateria_pct != null) s += ` · vaz. bateria ${a.vazamento_bateria_pct.toFixed(0)}%`;
+  return s;
+}
+
+function aplicarGanhos() {
+  const temSolo = faixas.some(f => f.solo);
+  for (const f of faixas) {
+    const ativo = temSolo ? f.solo : !f.mudo;
+    f.gain.gain.setTargetAtTime(ativo ? Math.pow(10, f.vol_db / 20) : 0, ctx.currentTime, 0.015);
+    f.el.classList.toggle("calada", !ativo);
+    f.el.querySelector(".m").classList.toggle("on", f.mudo);
+    f.el.querySelector(".s").classList.toggle("on", f.solo);
+  }
+}
+
+function desenharTudo() { for (const f of faixas) desenhar(f); }
+function desenhar(f) {
+  const c = f.canvas, dpr = window.devicePixelRatio || 1;
+  const w = c.clientWidth * dpr, h = c.clientHeight * dpr;
+  if (c.width !== w) { c.width = w; c.height = h; }
+  const g = c.getContext("2d"); g.clearRect(0, 0, w, h);
+  const cor = CORES[f.nome] || "#888", n = f.picos.length, x0 = (posicao / duracao) * w;
+  for (let x = 0; x < w; x++) {
+    const v = f.picos[Math.floor(x / w * n)] || 0, a = Math.max(1, v * h * 0.95);
+    g.fillStyle = x < x0 ? cor : cor + "66";
+    g.fillRect(x, (h - a) / 2, 1, a);
+  }
+  g.fillStyle = "#fff"; g.fillRect(x0, 0, 1.5 * dpr, h);
+}
+
+function agora() { return tocando ? Math.min(duracao, posicao + (ctx.currentTime - inicioCtx)) : posicao; }
+function tocar() {
+  if (modoOriginal) { elOriginal.currentTime = posicao; elOriginal.play(); tocando = true; inicioCtx = ctx.currentTime; $("play").textContent = "❚❚"; return; }
+  ctx.resume();
+  fontes = faixas.map(f => { const s = ctx.createBufferSource(); s.buffer = f.buffer; s.connect(f.gain); s.start(0, posicao); return s; });
+  inicioCtx = ctx.currentTime; tocando = true; $("play").textContent = "❚❚";
+}
+function pausar() { posicao = agora(); pararFontes(); tocando = false; $("play").textContent = "▶"; }
+function pararFontes() { for (const s of fontes) { try { s.stop(); } catch (e) {} } fontes = []; if (elOriginal) elOriginal.pause(); }
+function pararTudo() { pararFontes(); tocando = false; posicao = 0; $("play").textContent = "▶"; }
+function irPara(t) { const estava = tocando; if (estava) pausar(); posicao = Math.max(0, Math.min(duracao, t)); if (estava) tocar(); desenharTudo(); atualizarTempo(); }
+
+$("play").onclick = () => tocando ? pausar() : tocar();
+$("parar").onclick = () => { pausar(); irPara(0); };
+$("busca").oninput = (e) => irPara(e.target.value / 1000 * duracao);
+document.addEventListener("keydown", (e) => {
+  if (e.code === "Space" && !["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement.tagName) && faixas.length) {
+    e.preventDefault(); $("play").click();
+  }
+});
+$("ouvir-original").onclick = () => { const estava = tocando; if (estava) pausar(); modoOriginal = !modoOriginal; atualizarBotaoOriginal(); if (estava) tocar(); };
+function atualizarBotaoOriginal() {
+  $("ouvir-original").textContent = modoOriginal ? "Voltar ao mixer" : "Ouvir original";
+  $("ouvir-original").classList.toggle("prim", modoOriginal);
+}
+
+function atualizarTempo() {
+  const t = agora();
+  $("tempo").textContent = fmt(t) + " / " + fmt(duracao);
+  if (document.activeElement !== $("busca")) $("busca").value = duracao ? t / duracao * 1000 : 0;
+}
+(function laco() {
+  if (tocando) {
+    if (agora() >= duracao - 0.01) { pausar(); posicao = 0; }
+    desenharTudo(); atualizarTempo();
+  }
+  requestAnimationFrame(laco);
+})();
+window.addEventListener("resize", desenharTudo);
+
+// ------------------------------------------------------------------ salvar
+$("salvar").onclick = async () => {
+  const temSolo = faixas.some(f => f.solo);
+  const conf = {};
+  for (const f of faixas) conf[f.nome] = { volume_db: f.vol_db, mudo: temSolo ? !f.solo : f.mudo };
+  try {
+    await api("/api/salvar", { method: "POST", body: JSON.stringify({
+      projeto: projetoAtual, conjunto: $("conjunto").value, faixas: conf, nome: $("nome-saida").value,
+      formato: $("formato").value, velocidade: +$("velocidade").value }) });
+    acompanhar();
+  } catch (e) { alert(e.message); }
+};
+
+async function atualizarFinais() {
+  infoAtual = { ...infoAtual, ...(await api("/api/projeto/" + encodeURIComponent(projetoAtual))) };
+  const el = $("finais");
+  if (!infoAtual.finais.length) { el.innerHTML = '<div class="vazio">Nenhum ainda.</div>'; return; }
+  el.innerHTML = "";
+  for (const f of infoAtual.finais) {
+    const d = document.createElement("div"); d.className = "final";
+    d.innerHTML = `<span class="n"></span><audio controls preload="none"></audio><a class="baixar" title="Baixar">⤓</a><span class="dica" style="margin:0">${f.mb} MB</span>`;
+    d.querySelector(".n").textContent = f.nome; d.querySelector(".n").title = f.nome;
+    d.querySelector("audio").src = f.url; d.querySelector("a").href = f.url + "?baixar=1";
+    d.querySelector("audio").onplay = () => tocando && pausar();
+    el.append(d);
+  }
+}
+
+carregarMusicas();
+acompanhar();
+</script>
+</body>
+</html>

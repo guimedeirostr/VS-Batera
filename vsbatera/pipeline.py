@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -51,7 +51,9 @@ def carregar_stems(
 
 
 # --------------------------------------------------------------------------- etapas
-def etapa_separar(entrada: str | Path, projeto: Path, preset: dict[str, Any]) -> dict[str, Path]:
+def etapa_separar(
+    entrada: str | Path, projeto: Path, preset: dict[str, Any], progresso: Callable[[float], None] | None = None
+) -> dict[str, Path]:
     from .separacao import separar
 
     s = preset["separacao"]
@@ -63,6 +65,7 @@ def etapa_separar(entrada: str | Path, projeto: Path, preset: dict[str, Any]) ->
         dispositivo=s.get("dispositivo", "auto"),
         shifts=int(s.get("shifts", 2)),
         overlap=float(s.get("overlap", 0.25)),
+        progresso=progresso,
     )
 
 
@@ -81,13 +84,19 @@ def etapa_analisar(projeto: Path, preset: dict[str, Any] | None = None) -> dict[
 
 
 def etapa_limpar(
-    projeto: Path, preset: dict[str, Any], inicio: float | None = None, duracao: float | None = None
+    projeto: Path,
+    preset: dict[str, Any],
+    inicio: float | None = None,
+    duracao: float | None = None,
+    progresso: Callable[[float], None] | None = None,
 ) -> dict[str, Path]:
     faixas, sr = carregar_stems(projeto, "stems", inicio, duracao)
     bateria = faixas.get("bateria")
     destino = projeto / ("limpas" if inicio is None and duracao is None else "previa_limpas")
     saida = {}
-    for nome, audio in faixas.items():
+    for i, (nome, audio) in enumerate(faixas.items()):
+        if progresso:
+            progresso(i / len(faixas))
         if nome == "bateria":
             limpo = audio  # a bateria não é limpa: só serve de guia/referência
         else:

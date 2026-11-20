@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 
@@ -36,6 +37,7 @@ def separar(
     dispositivo: str = "auto",
     shifts: int = 2,
     overlap: float = 0.25,
+    progresso: Callable[[float], None] | None = None,
 ) -> dict[str, Path]:
     """Separa `entrada` e grava as faixas em `pasta_saida/stems/`. Retorna {nome_pt: caminho}.
 
@@ -46,7 +48,7 @@ def separar(
     pasta.mkdir(parents=True, exist_ok=True)
 
     if backend == "demucs":
-        stems, sr = _separar_demucs(entrada, modelo, dispositivo, shifts, overlap)
+        stems, sr = _separar_demucs(entrada, modelo, dispositivo, shifts, overlap, progresso)
     elif backend in ("audio-separator", "roformer", "uvr"):
         stems, sr = _separar_audio_separator(entrada, modelo, pasta)
     else:
@@ -78,7 +80,7 @@ def _dispositivo(dispositivo: str) -> str:
     return "cpu"
 
 
-def _separar_demucs(entrada, modelo, dispositivo, shifts, overlap) -> tuple[dict[str, np.ndarray], int]:
+def _separar_demucs(entrada, modelo, dispositivo, shifts, overlap, progresso=None) -> tuple[dict[str, np.ndarray], int]:
     import torch
     from demucs.apply import apply_model
     from demucs.pretrained import get_model
@@ -95,12 +97,36 @@ def _separar_demucs(entrada, modelo, dispositivo, shifts, overlap) -> tuple[dict
     media, desvio = ref.mean(), ref.std() + 1e-8
     wav = (wav - media) / desvio
 
+    callback = _contador_progresso(model, wav.shape[-1], shifts, overlap, progresso) if progresso else None
     with torch.no_grad():
         fontes = apply_model(
-            model, wav[None], device=dev, shifts=shifts, split=True, overlap=overlap, progress=True
+            model, wav[None], device=dev, shifts=shifts, split=True, overlap=overlap, progress=True,
+            callback=callback,
         )[0]
+    if progresso:
+        progresso(1.0)
     fontes = fontes * desvio + media
     return {nome: fontes[i].cpu().numpy().astype(np.float32) for i, nome in enumerate(model.sources)}, sr
+
+
+def _contador_progresso(model, comprimento: int, shifts: int, overlap: float, progresso: Callable[[float], None]):
+    """Callback do Demucs que conta os pedaços (segmentos) processados e reporta a fração concluída."""
+    import math
+
+    modelos = getattr(model, "models", [model])
+    seg = float(getattr(modelos[0], "segment", 7.8))
+    passo = max(1, int((1 - overlap) * model.samplerate * seg))
+    folga = int(0.5 * model.samplerate) if shifts else 0  # o Demucs desloca o áudio em até 0,5 s
+    por_passada = math.ceil((comprimento + folga) / passo)
+    total = max(1, len(modelos) * max(1, shifts) * por_passada)
+    feitos = [0]
+
+    def cb(d: dict) -> None:
+        if d.get("state") == "end":
+            feitos[0] += 1
+            progresso(min(0.99, feitos[0] / total))
+
+    return cb
 
 
 def _separar_audio_separator(entrada, modelo, pasta: Path) -> tuple[dict[str, np.ndarray], int]:
