@@ -1,0 +1,48 @@
+# Preset de exemplo. Copie para cada música e ajuste de ouvido.
+# Dica: calibre com prévias curtas:  vsbatera limpar saida/X -p este.yaml --inicio 60 --duracao 20
+#                                     vsbatera mixar  saida/X -p este.yaml --inicio 60 --duracao 20
+
+separacao:
+  backend: demucs
+  modelo: htdemucs_6s     # 6 faixas: bateria, baixo, voz, guitarra, teclado, outros
+  shifts: 2
+
+padrao_faixa:
+  remover_vazamento_bateria: 0.5
+  reducao_ruido: 0.4
+  passa_alta_hz: 40
+
+faixas:
+  baixo:
+    passa_alta_hz: 30
+    passa_baixa_hz: 6000          # tira o "click" de bateria que vaza no agudo do baixo
+    remover_vazamento_bateria: 0.7
+    reducao_ruido: 0.3
+    compressor: {limiar_db: -20, razao: 3, ataque_ms: 15, release_ms: 150}
+  guitarra:
+    passa_alta_hz: 90
+    remover_vazamento_bateria: 0.6
+    eq:
+      - {freq: 300, ganho_db: -2, q: 1.0}      # menos embolado
+      - {freq: 3000, ganho_db: 1.5, q: 0.8}    # mais presença
+  voz:
+    passa_alta_hz: 90
+    remover_vazamento_bateria: 0.8             # chimbal costuma vazar na voz
+    reducao_ruido: 0.5
+    gate_db: -50
+    compressor: {limiar_db: -22, razao: 2.5, ataque_ms: 5, release_ms: 100}
+  teclado:
+    passa_alta_hz: 50
+  outros:
+    remover_vazamento_bateria: 0.7
+    reducao_ruido: 0.5
+
+mix:
+  excluir: [bateria]
+  bateria_guia_db: null    # ex.: -22 para ouvir a bateria original bem baixinha
+  velocidade: 1.0          # 0.75 para estudar devagar
+  tom_semitons: 0
+  lufs_alvo: -14
+  teto_db: -1.0
+  formato: wav
+  fonte: faixas            # 'residual' = original − bateria (sem limpeza, mais fiel)
