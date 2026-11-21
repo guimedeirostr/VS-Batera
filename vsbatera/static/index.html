@@ -600,19 +600,16 @@ function atualizarFx(f) {
   if (!t || t.status === "pronto") { est.textContent = ""; return; }
   if (t.status === "erro") { est.textContent = "erro: " + (t.erro || ""); return; }
   const oque = t.tipo === "limpar" ? "limpando" : (t.onde === "pc" ? "reconstruindo no PC" : "reconstruindo no Colab");
-  est.textContent = t.status === "na fila do Colab" ? "⏳ na fila do Colab" + (colabVivo() ? "" : " (ligue o Colab)")
+  est.textContent = t.status === "na fila do Colab" ? (colabVivo() ? "⏳ na fila do Colab" : "⏳ ligando o Colab… (uns 3 a 5 min)")
     : `⚙️ ${oque}… ${t.pct ? t.pct + "%" : ""}`;
 }
 
 function colabVivo() { return !!(ultimoEstado && ultimoEstado.colab && ultimoEstado.colab.vivo); }
 
 async function pedirReconstrucao(f) {
-  let onde = "colab";
-  if (!colabVivo()) {
-    const pc = confirm("O Colab está desligado.\n\nOK = reconstruir no PC agora (lento: cerca de 1 h para 4 min de música).\n" +
-                       "Cancelar = deixar na fila do Colab (roda em segundos quando ele for ligado).");
-    if (pc) onde = "pc";
-  }
+  // sempre vai para o Colab (GPU, segundos). Se ele estiver desligado, é ligado automaticamente em alguns minutos.
+  // Shift+clique = fazer no PC mesmo (lento: ~1 h para 4 min de música).
+  const onde = (window.event && window.event.shiftKey) ? "pc" : "colab";
   try {
     await api("/api/reconstruir", { method: "POST", body: JSON.stringify({ projeto: projetoAtual, faixa: f.nome, onde }) });
     acompanharFaixas();
