@@ -402,7 +402,7 @@ const reverbIn = ctx.createGain(), convolver = ctx.createConvolver();
 convolver.normalize = false; reverbIn.connect(convolver); convolver.connect(mestre);
 fetch("/api/ir.wav").then(r => r.arrayBuffer()).then(b => ctx.decodeAudioData(b)).then(buf => { convolver.buffer = buf; })
   .catch(e => console.warn("reverb indisponível", e));
-const INTENSIDADES = [["original", "Original (sem limpeza)"], ["leve", "Leve"], ["media", "Média"], ["automatica", "Automática"]];
+const INTENSIDADES = [["original", "Original (sem limpeza)"], ["suave", "Suave (sem artefatos)"], ["leve", "Leve"], ["media", "Média"], ["automatica", "Automática"]];
 const RECONSTRUIVEIS = ["guitarra", "teclado", "outros", "baixo", "instrumental"];
 let faixas = [];           // {nome, buffer, gain, vol_db, mudo, solo, canvas, picos, url}
 let tocando = false, inicioCtx = 0, posicao = 0, duracao = 0, fontes = [];

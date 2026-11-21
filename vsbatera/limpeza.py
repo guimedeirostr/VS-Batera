@@ -21,10 +21,14 @@ HOP = 512
 
 
 # --------------------------------------------------------------------------- vazamento de bateria
-def remover_vazamento(stem: np.ndarray, bateria: np.ndarray, sr: int, forca: float = 0.7) -> np.ndarray:
+def remover_vazamento(stem: np.ndarray, bateria: np.ndarray, sr: int, forca: float = 0.7,
+                      suave: bool = False, piso: float | None = None) -> np.ndarray:
     """Atenua bins tempo-frequência onde a bateria domina (filtro de Wiener suave).
 
     forca: 0 = desligado, 1 = máximo. Valores altos podem deixar o som "aguado" nos ataques.
+    suave: suaviza a máscara em tempo×frequência (mediana 3×7). Evita os bins que ligam/desligam rápido,
+           que é o que deixa a faixa "robótica/aquosa". Usado no modo de limpeza "suave" (padrão da guitarra).
+    piso: atenuação máxima (0..1); por padrão depende da força.
     """
     if forca <= 0:
         return stem
@@ -32,12 +36,17 @@ def remover_vazamento(stem: np.ndarray, bateria: np.ndarray, sr: int, forca: flo
     n = min(stem.shape[1], bateria.shape[1])
     saida = np.empty_like(stem[:, :n])
     k = 0.5 + 4.0 * forca  # quanto pesa a bateria na máscara
-    piso = 1.0 - 0.9 * forca  # atenuação máxima
+    piso = (1.0 - 0.9 * forca) if piso is None else float(piso)  # atenuação máxima
     for c in range(stem.shape[0]):
         _, _, S = stft(stem[c, :n], fs=sr, nperseg=N_FFT, noverlap=N_FFT - HOP)
         _, _, D = stft(bateria[c, :n], fs=sr, nperseg=N_FFT, noverlap=N_FFT - HOP)
         ps, pd = np.abs(S) ** 2, np.abs(D) ** 2
         mascara = ps / (ps + k * pd + 1e-12)
+        if suave:
+            from scipy.ndimage import median_filter, uniform_filter
+
+            mascara = median_filter(mascara, size=(3, 7), mode="nearest")
+            mascara = uniform_filter(mascara, size=(1, 3), mode="nearest")
         mascara = np.maximum(mascara, piso)
         _, x = istft(S * mascara, fs=sr, nperseg=N_FFT, noverlap=N_FFT - HOP)
         saida[c] = x[:n]
@@ -103,7 +112,8 @@ def limpar_faixa(
     """Aplica a cadeia de limpeza a uma faixa (canais, amostras)."""
     x = _sem_nan(audio)
     if bateria is not None and cfg.get("remover_vazamento_bateria", 0):
-        x = _sem_nan(remover_vazamento(x, _sem_nan(bateria), sr, float(cfg["remover_vazamento_bateria"])))
+        x = _sem_nan(remover_vazamento(x, _sem_nan(bateria), sr, float(cfg["remover_vazamento_bateria"]),
+                                       suave=bool(cfg.get("mascara_suave")), piso=cfg.get("piso_mascara")))
     # faixa quase muda (ex.: música sem guitarra) faz a redução de ruído dividir 0 por 0 e gerar NaN
     x = _sem_nan(reduzir_ruido(x, sr, float(cfg.get("reducao_ruido", 0) or 0), bool(cfg.get("ruido_estacionario", False))))
     cadeia = construir_cadeia(cfg)

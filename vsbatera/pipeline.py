@@ -86,6 +86,10 @@ def etapa_analisar(projeto: Path, preset: dict[str, Any] | None = None) -> dict[
     return analise
 
 
+# faixas que usam a limpeza "suave" por padrão (máscara suavizada, sem redução de ruído)
+FAIXAS_SUAVES = {"guitarra"}
+
+
 def etapa_limpar(
     projeto: Path,
     preset: dict[str, Any],
@@ -104,9 +108,19 @@ def etapa_limpar(
             limpo = audio  # a bateria não é limpa: só serve de guia/referência
         else:
             cfg = cfgmod.config_da_faixa(preset, nome)
+            if nome in FAIXAS_SUAVES:  # guitarra: limpeza suave (a redução de ruído a deixava fina/robótica)
+                from .efeitos import CONFIG_SUAVE
+
+                cfg = dict(cfg, **CONFIG_SUAVE)
             print(f"[limpar] {nome}: {_resumo(cfg)}")
             limpo = limpar_faixa(audio, sr, cfg, bateria)
         saida[nome] = salvar(arquivo_faixa(destino, nome), limpo, sr)
+    if destino.name == "limpas":  # o mixer mostra qual limpeza cada faixa recebeu
+        import json
+
+        sel = {n: "suave" for n in faixas if n in FAIXAS_SUAVES}
+        if sel:
+            (projeto / "limpeza.json").write_text(json.dumps(sel, ensure_ascii=False), encoding="utf-8")
     return saida
 
 

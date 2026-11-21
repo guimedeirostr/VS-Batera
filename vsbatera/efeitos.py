@@ -16,8 +16,15 @@ EQ_MEDIO_HZ = 1000.0
 EQ_MEDIO_Q = 0.9
 EQ_AGUDO_HZ = 8000.0
 
-# intensidades de limpeza oferecidas no mixer (1.0 = a calibração automática feita no processamento)
-INTENSIDADES = {"original": 0.0, "leve": 0.4, "media": 0.7, "automatica": 1.0}
+# intensidades de limpeza oferecidas no mixer (1.0 = a calibração automática feita no processamento).
+# "suave" é um modo à parte (ver CONFIG_SUAVE): só tira o vazamento de bateria, com máscara suavizada.
+INTENSIDADES = {"original": 0.0, "suave": -1.0, "leve": 0.4, "media": 0.7, "automatica": 1.0}
+
+# Modo "suave": medido em 3 músicas, tira 30–75% do vazamento de bateria sem a redução de ruído que deixava a
+# guitarra fina/robótica (a automática chegava a mexer +5 dB no balanço de agudos).
+CONFIG_SUAVE = {"remover_vazamento_bateria": 0.5, "mascara_suave": True, "piso_mascara": 0.35,
+                "reducao_ruido": 0.0, "gate_db": None, "passa_alta_hz": 80, "passa_baixa_hz": None,
+                "eq": [], "compressor": None}
 
 
 def eq(audio: np.ndarray, sr: int, grave_db: float = 0, medio_db: float = 0, agudo_db: float = 0) -> np.ndarray:
@@ -83,7 +90,9 @@ def wav_ir(sr: int = 44100) -> bytes:
 
 
 def config_com_intensidade(cfg: dict[str, Any], k: float) -> dict[str, Any]:
-    """Escala a limpeza calibrada (k=1) para mais leve (k<1). k=0 significa sem limpeza."""
+    """Escala a limpeza calibrada (k=1) para mais leve (k<1). k=0 = sem limpeza; k<0 = modo "suave"."""
+    if k < 0:
+        return dict(cfg, **CONFIG_SUAVE)
     k = float(np.clip(k, 0, 1))
     c = dict(cfg)
     c["remover_vazamento_bateria"] = float(c.get("remover_vazamento_bateria", 0) or 0) * k
