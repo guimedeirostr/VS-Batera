@@ -76,8 +76,21 @@ vsbatera web            # abre http://localhost:8765
   com a **% de cada etapa**, tempo e estimativa. A fila fica salva e continua se o painel reiniciar.
 - **Faixa por faixa**: forma de onda, volume (dB), mudo (M), solo (S) e download de cada faixa;
   compare faixas limpas × cruas e com a música original.
-- **Salvar mix** com os volumes do mixer, em WAV/MP3/FLAC e na velocidade de estudo (100% a 60%).
-  Os ajustes ficam em `saida/<música>/preset_web.yaml` e voltam quando você abre a música de novo.
+- **Por faixa no mixer**: **limpeza** (Original / Leve / Média / Automática — refaz só aquela faixa a partir
+  da separação crua), **EQ de 3 bandas** (grave 100 Hz, médio 1 kHz, agudo 8 kHz, ±12 dB) e **reverb**
+  (envio para um reverb de sala comum). Duplo clique num controle zera.
+- **✨ Reconstruir** (guitarra, teclado, outros, baixo): recompõe o timbre que a limpeza tirou com o modelo
+  de restauração **Apollo** — não muda notas nem tempo. Roda no Colab (segundos; o pedido fica em
+  `saida/_pedidos/`) ou no PC (lento, ~1 h para 4 min). Depois é só marcar/desmarcar "usar reconstruída".
+- **Link do YouTube**: cole o link, o áudio é baixado e já entra na fila.
+- **Processar no Colab (GPU)**: com o painel apontando para a pasta do Google Drive, a fila só acompanha
+  e o notebook do Colab (modo vigia) processa.
+- **Salvar mix** exatamente como está no mixer (volumes, EQ, reverb, reconstruídas), em WAV/MP3/FLAC e na
+  velocidade de estudo (100% a 60%). Os ajustes ficam em `saida/<música>/preset_web.yaml`.
+
+Créditos do Apollo: Kai Li & Yi Luo, *Apollo: Band-sequence Modeling for High-Quality Audio Restoration*
+(2024), [github.com/JusperLee/Apollo](https://github.com/JusperLee/Apollo). O código da rede em
+`vsbatera/apollo_rede.py` e os pesos oficiais seguem a licença **CC BY-SA 4.0**.
 
 ## Separação dupla (Demucs + RoFormer) e 2ª passada
 

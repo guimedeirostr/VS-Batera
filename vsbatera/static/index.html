@@ -90,6 +90,18 @@
   .baixar { color: var(--fraco); text-decoration: none; font-size: 16px; padding: 0 2px; }
   .baixar:hover { color: var(--texto); }
   #carregando { color: var(--fraco); padding: 20px 0; }
+  .faixa .fx { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px;
+               font-size: 12px; color: var(--fraco); padding-left: 18px; }
+  .fx label { display: flex; align-items: center; gap: 5px; }
+  .fx select { padding: 2px 6px; font-size: 12px; }
+  .fx input[type=range] { width: 64px; accent-color: var(--acento2); }
+  .fx .v { width: 30px; font-variant-numeric: tabular-nums; }
+  .fx .grupo { display: flex; align-items: center; gap: 6px; }
+  .fx button { padding: 3px 9px; font-size: 12px; }
+  .fx .estado { color: var(--acento2); }
+  .fx .estado.erro { color: #f66; }
+  .fx .rec-on { display: none; }
+  .fx [hidden] { display: none !important; }
 
   .salvar { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--borda); }
   .salvar label { display: flex; flex-direction: column; gap: 4px; color: var(--fraco); font-size: 12px; }
@@ -188,7 +200,7 @@
           </label>
           <button class="prim" id="salvar">💾 Salvar mix</button>
         </div>
-        <div class="dica">O arquivo é salvo com os volumes, mudos e solos que estão no mixer. A bateria entra como guia só se não estiver no mudo.</div>
+        <div class="dica">O arquivo é salvo exatamente como está no mixer: volumes, mudos, solos, EQ, reverb e faixas reconstruídas. A bateria entra como guia só se não estiver no mudo.</div>
 
         <div class="finais">
           <h2 style="margin-top:18px">Arquivos salvos</h2>
@@ -385,6 +397,13 @@ $("fila-limpar").onclick = async () => { await api("/api/fila/limpar", { method:
 // ------------------------------------------------------------------ mixer (Web Audio)
 const ctx = new (window.AudioContext || window.webkitAudioContext)();
 const mestre = ctx.createGain(); mestre.connect(ctx.destination);
+// reverb: um barramento só, com a MESMA resposta ao impulso que o servidor usa ao salvar
+const reverbIn = ctx.createGain(), convolver = ctx.createConvolver();
+convolver.normalize = false; reverbIn.connect(convolver); convolver.connect(mestre);
+fetch("/api/ir.wav").then(r => r.arrayBuffer()).then(b => ctx.decodeAudioData(b)).then(buf => { convolver.buffer = buf; })
+  .catch(e => console.warn("reverb indisponível", e));
+const INTENSIDADES = [["original", "Original (sem limpeza)"], ["leve", "Leve"], ["media", "Média"], ["automatica", "Automática"]];
+const RECONSTRUIVEIS = ["guitarra", "teclado", "outros", "baixo", "instrumental"];
 let faixas = [];           // {nome, buffer, gain, vol_db, mudo, solo, canvas, picos, url}
 let tocando = false, inicioCtx = 0, posicao = 0, duracao = 0, fontes = [];
 let elOriginal = null, modoOriginal = false;
@@ -425,8 +444,11 @@ async function carregarConjunto(conj) {
   let n = 0;
   $("carregando").textContent = `Carregando faixas 0/${lista.length}…`;
   const salvo = (infoAtual.salvo && infoAtual.salvo.faixas) || {};
+  const recs = infoAtual.reconstruidas || {};
   const carregadas = await Promise.all(lista.map(async (t) => {
-    const buf = await fetch(t.url).then(r => r.arrayBuffer()).then(b => ctx.decodeAudioData(b));
+    const ant = anterior[t.nome], sv = salvo[t.nome];
+    const querRec = !!recs[t.nome] && (ant ? ant.reconstruida : !!(sv && sv.reconstruida));
+    const buf = await decodificar(querRec ? recs[t.nome] : t.url);
     $("carregando").textContent = `Carregando faixas ${++n}/${lista.length}…`;
     return { t, buf };
   }));
@@ -435,16 +457,50 @@ async function carregarConjunto(conj) {
   for (const { t, buf } of carregadas) {
     const ant = anterior[t.nome], sv = salvo[t.nome];
     const f = { nome: t.nome, url: t.url, buffer: buf, gain: ctx.createGain(),
+                eq: { ...((ant && ant.eq) || (sv && sv.eq) || { grave: 0, medio: 0, agudo: 0 }) },
+                reverb: ant ? ant.reverb : ((sv && sv.reverb) || 0),
+                reconstruida: !!recs[t.nome] && (ant ? ant.reconstruida : !!(sv && sv.reconstruida)),
                 vol_db: ant ? ant.vol_db : (t.nome === "bateria" ? (infoAtual.salvo.guia_db ?? -18) : (sv ? sv.volume_db : 0)),
                 mudo: ant ? ant.mudo : (t.nome === "bateria" ? infoAtual.salvo.guia_db == null : !!(sv && sv.mudo)),
                 solo: ant ? ant.solo : false };
-    f.gain.connect(mestre);
+    montarNos(f);
     f.picos = picos(buf, 1200);
     duracao = Math.max(duracao, buf.duration);
     faixas.push(f);
     $("faixas").append(linhaFaixa(f));
   }
   aplicarGanhos(); desenharTudo(); atualizarTempo();
+  if (Object.values(infoAtual.trabalhos || {}).some(t => t.status !== "pronto" && t.status !== "erro")) acompanharFaixas();
+}
+
+async function decodificar(url) {
+  return fetch(url + (url.includes("?") ? "&" : "?") + "v=" + Date.now())
+    .then(r => r.arrayBuffer()).then(b => ctx.decodeAudioData(b));
+}
+
+// fonte -> grave -> médio -> agudo -> volume -> mestre ; volume -> envio -> reverb
+function montarNos(f) {
+  f.eqG = ctx.createBiquadFilter(); f.eqG.type = "lowshelf"; f.eqG.frequency.value = 100;
+  f.eqM = ctx.createBiquadFilter(); f.eqM.type = "peaking"; f.eqM.frequency.value = 1000; f.eqM.Q.value = 0.9;
+  f.eqA = ctx.createBiquadFilter(); f.eqA.type = "highshelf"; f.eqA.frequency.value = 8000;
+  f.envio = ctx.createGain();
+  f.eqG.connect(f.eqM); f.eqM.connect(f.eqA); f.eqA.connect(f.gain);
+  f.gain.connect(mestre); f.gain.connect(f.envio); f.envio.connect(reverbIn);
+  aplicarFx(f);
+}
+function aplicarFx(f) {
+  f.eqG.gain.value = f.eq.grave; f.eqM.gain.value = f.eq.medio; f.eqA.gain.value = f.eq.agudo;
+  f.envio.gain.setTargetAtTime(f.reverb, ctx.currentTime, 0.02);
+}
+
+// troca o áudio de uma faixa (limpeza refeita / versão reconstruída) sem perder a posição
+async function recarregarFaixa(f) {
+  const recs = infoAtual.reconstruidas || {};
+  const url = f.reconstruida && recs[f.nome] ? recs[f.nome] : f.url;
+  const estava = tocando; if (estava) pausar();
+  f.buffer = await decodificar(url);
+  f.picos = picos(f.buffer, 1200); desenhar(f);
+  if (estava) tocar();
 }
 
 function picos(buf, n) {
@@ -469,6 +525,21 @@ function linhaFaixa(f) {
       <button class="ms m" title="Mudo">M</button><button class="ms s" title="Solo">S</button>
       <input type="range" min="-40" max="6" step="0.5"><span class="db"></span>
       <a class="baixar" title="Baixar esta faixa" href="${f.url}?baixar=1">⤓</a>
+    </div>
+    <div class="fx">
+      <label class="lp" title="Refaz a limpeza só desta faixa, a partir da separação crua">Limpeza <select></select></label>
+      <span class="grupo" title="Equalizador (duplo clique zera)">EQ
+        <label>grave <input type="range" class="eqg" min="-12" max="12" step="0.5"><span class="v"></span></label>
+        <label>médio <input type="range" class="eqm" min="-12" max="12" step="0.5"><span class="v"></span></label>
+        <label>agudo <input type="range" class="eqa" min="-12" max="12" step="0.5"><span class="v"></span></label>
+      </span>
+      <label title="Quanto desta faixa vai para o reverb (duplo clique zera)">reverb
+        <input type="range" class="rv" min="0" max="100" step="1"><span class="v"></span></label>
+      <span class="grupo rc">
+        <button class="rec" title="Recompõe o timbre que a limpeza tirou (IA de restauração Apollo). Não muda notas nem tempo.">✨ Reconstruir</button>
+        <label class="rec-on"><input type="checkbox"> usar reconstruída</label>
+      </span>
+      <span class="estado"></span>
     </div>`;
   f.canvas = el.querySelector("canvas");
   const r = el.querySelector("input"), db = el.querySelector(".db");
@@ -478,9 +549,97 @@ function linhaFaixa(f) {
   el.querySelector(".m").onclick = () => { f.mudo = !f.mudo; aplicarGanhos(); };
   el.querySelector(".s").onclick = () => { f.solo = !f.solo; aplicarGanhos(); };
   f.canvas.onclick = (e) => { const b = f.canvas.getBoundingClientRect(); irPara((e.clientX - b.left) / b.width * duracao); };
+  ligarFx(f, el);
   return el;
 }
 const fmtDb = (v) => (v > 0 ? "+" : "") + (+v).toFixed(1) + " dB";
+
+function ligarFx(f, el) {
+  // EQ
+  for (const [cls, k] of [["eqg", "grave"], ["eqm", "medio"], ["eqa", "agudo"]]) {
+    const r = el.querySelector("." + cls), v = r.nextElementSibling;
+    const mostrar = () => { v.textContent = (f.eq[k] > 0 ? "+" : "") + f.eq[k]; };
+    r.value = f.eq[k]; mostrar();
+    r.oninput = () => { f.eq[k] = +r.value; mostrar(); aplicarFx(f); };
+    r.ondblclick = () => { r.value = 0; r.oninput(); };
+  }
+  // reverb
+  const rv = el.querySelector(".rv"), rvv = rv.nextElementSibling;
+  rv.value = Math.round(f.reverb * 100); rvv.textContent = rv.value + "%";
+  rv.oninput = () => { f.reverb = +rv.value / 100; rvv.textContent = rv.value + "%"; aplicarFx(f); };
+  rv.ondblclick = () => { rv.value = 0; rv.oninput(); };
+  // limpeza (só faz sentido no conjunto "limpas" e fora da bateria)
+  const lp = el.querySelector(".lp"), sel = lp.querySelector("select");
+  if (f.nome === "bateria" || $("conjunto").value !== "limpas" || !infoAtual.conjuntos.stems) lp.hidden = true;
+  for (const [k, rot] of INTENSIDADES) sel.add(new Option(rot, k));
+  sel.value = (infoAtual.limpeza || {})[f.nome] || "automatica";
+  sel.onchange = async () => {
+    try {
+      await api("/api/limpar_faixa", { method: "POST", body: JSON.stringify({ projeto: projetoAtual, faixa: f.nome, intensidade: sel.value }) });
+      f.reconstruida = false; // a reconstruída antiga foi feita da limpeza anterior
+      acompanharFaixas();
+    } catch (e) { alert(e.message); }
+  };
+  // reconstruir
+  const rc = el.querySelector(".rc");
+  if (!RECONSTRUIVEIS.includes(f.nome)) rc.hidden = true;
+  el.querySelector(".rec").onclick = () => pedirReconstrucao(f);
+  const chk = el.querySelector(".rec-on input");
+  chk.onchange = async () => { f.reconstruida = chk.checked; await recarregarFaixa(f); };
+  atualizarFx(f);
+}
+
+function atualizarFx(f) {
+  if (!f.el) return;
+  const t = (infoAtual.trabalhos || {})[f.nome], est = f.el.querySelector(".estado");
+  const temRec = !!(infoAtual.reconstruidas || {})[f.nome];
+  f.el.querySelector(".rec-on").style.display = temRec ? "flex" : "none";
+  f.el.querySelector(".rec-on input").checked = f.reconstruida;
+  f.el.querySelector(".rec").textContent = temRec ? "✨ Refazer" : "✨ Reconstruir";
+  est.classList.toggle("erro", !!(t && t.status === "erro"));
+  if (!t || t.status === "pronto") { est.textContent = ""; return; }
+  if (t.status === "erro") { est.textContent = "erro: " + (t.erro || ""); return; }
+  const oque = t.tipo === "limpar" ? "limpando" : (t.onde === "pc" ? "reconstruindo no PC" : "reconstruindo no Colab");
+  est.textContent = t.status === "na fila do Colab" ? "⏳ na fila do Colab" + (colabVivo() ? "" : " (ligue o Colab)")
+    : `⚙️ ${oque}… ${t.pct ? t.pct + "%" : ""}`;
+}
+
+function colabVivo() { return !!(ultimoEstado && ultimoEstado.colab && ultimoEstado.colab.vivo); }
+
+async function pedirReconstrucao(f) {
+  let onde = "colab";
+  if (!colabVivo()) {
+    const pc = confirm("O Colab está desligado.\n\nOK = reconstruir no PC agora (lento: cerca de 1 h para 4 min de música).\n" +
+                       "Cancelar = deixar na fila do Colab (roda em segundos quando ele for ligado).");
+    if (pc) onde = "pc";
+  }
+  try {
+    await api("/api/reconstruir", { method: "POST", body: JSON.stringify({ projeto: projetoAtual, faixa: f.nome, onde }) });
+    acompanharFaixas();
+  } catch (e) { alert(e.message); }
+}
+
+// acompanha limpezas/reconstruções em andamento e recarrega a faixa quando fica pronta
+let timerFaixas = null;
+function acompanharFaixas() { if (!timerFaixas) timerFaixas = setInterval(verFaixas, 3000); verFaixas(); }
+async function verFaixas() {
+  if (!projetoAtual) return;
+  const antes = infoAtual.trabalhos || {}, recAntes = { ...(infoAtual.reconstruidas || {}) };
+  let novo;
+  try { novo = await api("/api/projeto/" + encodeURIComponent(projetoAtual)); } catch (_) { return; }
+  if (novo.nome !== projetoAtual) return;
+  infoAtual = { ...infoAtual, trabalhos: novo.trabalhos, reconstruidas: novo.reconstruidas, limpeza: novo.limpeza };
+  for (const f of faixas) {
+    const a = antes[f.nome], d = (novo.trabalhos || {})[f.nome];
+    const terminou = a && a.status !== "pronto" && a.status !== "erro" && d && d.status === "pronto";
+    if (terminou && d.tipo === "limpar") { if (!f.reconstruida) await recarregarFaixa(f); }
+    if (terminou && d.tipo === "reconstruir") { f.reconstruida = true; await recarregarFaixa(f); }
+    else if (!recAntes[f.nome] && novo.reconstruidas[f.nome] && d && d.tipo === "reconstruir") { f.reconstruida = true; await recarregarFaixa(f); }
+    atualizarFx(f);
+  }
+  const ativos = Object.values(novo.trabalhos || {}).some(t => t.status !== "pronto" && t.status !== "erro");
+  if (!ativos && timerFaixas) { clearInterval(timerFaixas); timerFaixas = null; }
+}
 function analiseDe(nome) {
   const a = infoAtual.analise && infoAtual.analise[nome];
   if (!a) return "";
@@ -519,7 +678,7 @@ function agora() { return tocando ? Math.min(duracao, posicao + (ctx.currentTime
 function tocar() {
   if (modoOriginal) { elOriginal.currentTime = posicao; elOriginal.play(); tocando = true; inicioCtx = ctx.currentTime; $("play").textContent = "❚❚"; return; }
   ctx.resume();
-  fontes = faixas.map(f => { const s = ctx.createBufferSource(); s.buffer = f.buffer; s.connect(f.gain); s.start(0, posicao); return s; });
+  fontes = faixas.map(f => { const s = ctx.createBufferSource(); s.buffer = f.buffer; s.connect(f.eqG); s.start(0, posicao); return s; });
   inicioCtx = ctx.currentTime; tocando = true; $("play").textContent = "❚❚";
 }
 function pausar() { posicao = agora(); pararFontes(); tocando = false; $("play").textContent = "▶"; }
@@ -559,7 +718,8 @@ window.addEventListener("resize", desenharTudo);
 $("salvar").onclick = async () => {
   const temSolo = faixas.some(f => f.solo);
   const conf = {};
-  for (const f of faixas) conf[f.nome] = { volume_db: f.vol_db, mudo: temSolo ? !f.solo : f.mudo };
+  for (const f of faixas) conf[f.nome] = { volume_db: f.vol_db, mudo: temSolo ? !f.solo : f.mudo,
+                                           eq: f.eq, reverb: f.reverb, reconstruida: f.reconstruida };
   const bt = $("salvar"); bt.disabled = true; bt.textContent = "Salvando…";
   try {
     await api("/api/salvar", { method: "POST", body: JSON.stringify({

@@ -140,10 +140,12 @@ def _processar(musica: Path, raiz: Path, auto: bool, modelo: str | None, modo: s
 
 
 def _salvar_mix(projeto: Path, pedido: dict[str, Any]) -> Path:
-    """Gera a versão final com os volumes/mudos escolhidos no painel e grava o preset usado."""
+    """Gera a versão final como está no mixer: volume, mudo/solo, faixa reconstruída, EQ de 3 bandas e
+    envio de reverb por faixa (mesma resposta ao impulso do navegador). Grava o preset para reabrir igual."""
     import numpy as np
 
-    from .audio_io import salvar
+    from .audio_io import achar_arquivo, carregar, salvar
+    from .efeitos import eq, reverb
     from .mix import mixar
 
     base = projeto / "preset_web.yaml"
@@ -159,9 +161,12 @@ def _salvar_mix(projeto: Path, pedido: dict[str, Any]) -> Path:
     bat = conf.get("bateria", {})
     m["bateria_guia_db"] = None if bat.get("mudo", True) else float(bat.get("volume_db", -18))
     for nome, c in conf.items():
+        f = preset.setdefault("faixas", {}).setdefault(nome, {})
+        f["eq_web"] = {k: float((c.get("eq") or {}).get(k, 0)) for k in ("grave", "medio", "agudo")}
+        f["reverb_web"] = float(c.get("reverb", 0))
+        f["usar_reconstruida"] = bool(c.get("reconstruida"))
         if nome == "bateria":
             continue
-        f = preset.setdefault("faixas", {}).setdefault(nome, {})
         f["mudo"] = bool(c.get("mudo"))
         f["volume_mix_db"] = float(c.get("volume_db", 0))
         if "pan" in c:
@@ -169,14 +174,33 @@ def _salvar_mix(projeto: Path, pedido: dict[str, Any]) -> Path:
 
     sub = pedido.get("conjunto") or ("limpas" if (projeto / "limpas").exists() else "stems")
     faixas, sr = pl.carregar_stems(projeto, sub)
-    for nome in list(faixas):
-        if nome == "bateria":  # a bateria só entra como guia, no volume de bateria_guia_db
+    saida: dict[str, np.ndarray] = {}
+    envio = None
+    for nome, audio in faixas.items():
+        c = conf.get(nome, {})
+        if c.get("mudo", nome == "bateria"):
             continue
-        db = float(conf.get(nome, {}).get("volume_db", 0))
-        if db:
-            faixas[nome] = (faixas[nome] * (10 ** (db / 20))).astype(np.float32)
-    cfg_faixas = {n: cfgmod.config_da_faixa(preset, n) for n in faixas}
-    final = mixar(faixas, sr, cfg_faixas, m)
+        if c.get("reconstruida"):
+            rec = achar_arquivo(projeto / "reconstruidas", nome)
+            if rec is not None:
+                audio, sr_r = carregar(rec)
+                if sr_r != sr:
+                    from .audio_io import reamostrar
+
+                    audio = reamostrar(audio, sr_r, sr)
+        x = (audio * (10 ** (float(c.get("volume_db", 0)) / 20))).astype(np.float32)
+        e = c.get("eq") or {}
+        x = eq(x, sr, e.get("grave", 0), e.get("medio", 0), e.get("agudo", 0))
+        r = float(c.get("reverb", 0))
+        if r > 0:
+            n = x.shape[1] if envio is None else min(envio.shape[1], x.shape[1])
+            envio = (x[:, :n] * r) if envio is None else envio[:, :n] + x[:, :n] * r
+        saida[nome] = x
+    if envio is not None:
+        saida["_reverb"] = reverb(envio, sr)
+    # volumes, mudos e a guia de bateria já foram aplicados acima: o mixar só soma, ajusta a velocidade e masteriza
+    m_soma = dict(m, excluir=[], bateria_guia_db=None)
+    final = mixar(saida, sr, {n: {} for n in saida}, m_soma)
 
     nome = (pedido.get("nome") or f"{projeto.name} - minha mix").strip()
     nome = re.sub(r'[\\/:*?"<>|]+', "_", nome)
@@ -198,6 +222,7 @@ def ler_status_colab(saida: Path) -> dict[str, Any]:
     # o Colab (Linux) grava acentos decompostos (NFD: "a" + til); o Windows usa NFC ("ã"). Unifica.
     nfc = lambda t: unicodedata.normalize("NFC", t) if isinstance(t, str) else t  # noqa: E731
     st["processando"] = nfc(st.get("processando"))
+    st["reconstruindo"] = nfc(st.get("reconstruindo"))
     for k in ("fila", "erros"):
         st[k] = [nfc(x) for x in st.get(k) or []]
     return st
@@ -391,14 +416,37 @@ class App:
             pr = cfgmod.carregar_preset(proj / "preset_web.yaml")
             salvo = {
                 "faixas": {n: {"volume_db": f.get("volume_mix_db", 0), "mudo": f.get("mudo", False),
-                               "pan": f.get("pan", 0)} for n, f in pr.get("faixas", {}).items()},
+                               "pan": f.get("pan", 0), "eq": f.get("eq_web") or {"grave": 0, "medio": 0, "agudo": 0},
+                               "reverb": f.get("reverb_web", 0), "reconstruida": f.get("usar_reconstruida", False)}
+                           for n, f in pr.get("faixas", {}).items()},
+                "guia": pr.get("guia_web") or {},
                 "guia_db": pr["mix"].get("bateria_guia_db"),
                 "velocidade": pr["mix"].get("velocidade", 1.0),
                 "formato": pr["mix"].get("formato", "wav"),
             }
+        reconstruidas = {p.stem: url(p) for p in achar_faixas(proj / "reconstruidas")}
+        trabalhos = json.loads(json.dumps(TRABALHOS.get(nome, {})))
+        pedidos = [pd for pd in _pedidos_colab(self.saida) if pd.get("projeto") == nome]
+        st = ler_status_colab(self.saida) if pedidos else {}
+        for ped in pedidos:
+            rodando = st.get("vivo") and st.get("reconstruindo") == f"{nome}/{ped.get('faixa')}"
+            trabalhos[ped["faixa"]] = {"tipo": "reconstruir", "onde": "colab",
+                                       "status": "rodando" if rodando else "na fila do Colab",
+                                       "pct": st.get("pct", 0) if rodando else 0}
+        pendentes = {pd.get("faixa") for pd in pedidos}
+        for f, t in trabalhos.items():  # pedido do Colab que já terminou
+            if t.get("onde") == "colab" and t.get("status") in ("na fila do Colab", "rodando") and f not in pendentes:
+                # o pedido saiu da fila: ou ficou pronto, ou foi cancelado/falhou no Colab
+                novo = {"status": "pronto"} if f in reconstruidas else \
+                    {"status": "erro", "erro": "o pedido saiu da fila sem resultado (veja o notebook do Colab)"}
+                t.update(novo)
+                _estado(nome, f, **novo)
         return {
             "nome": nome,
             "conjuntos": conjuntos,
+            "reconstruidas": reconstruidas,
+            "limpeza": _ler_limpeza(proj),
+            "trabalhos": trabalhos,
             "duplo": duplo,
             "finais": finais,
             "original": ("/musica/" + quote(original.name)) if original else None,
@@ -493,6 +541,17 @@ def _handler(app: App):
                     e["fila"] = FILA.copia()
                     e["colab"] = ler_status_colab(app.saida)
                     return self._json(e)
+                if caminho == "/api/ir.wav":
+                    from .efeitos import wav_ir
+
+                    dados = wav_ir(44100)
+                    self.send_response(200)
+                    self.send_header("Content-Type", "audio/wav")
+                    self.send_header("Content-Length", str(len(dados)))
+                    self.send_header("Cache-Control", "max-age=86400")
+                    self.end_headers()
+                    self.wfile.write(dados)
+                    return
                 if caminho.startswith("/api/projeto/"):
                     return self._json(app.info_projeto(caminho[len("/api/projeto/"):]))
                 if caminho.startswith("/arquivo/"):
@@ -539,6 +598,37 @@ def _handler(app: App):
                     threading.Thread(target=_baixar_link, args=(app, item), daemon=True).start()
                     return self._json({"ok": True, "id": item["id"]})
 
+                if u.path == "/api/limpar_faixa":
+                    from .efeitos import INTENSIDADES
+
+                    d = self._corpo_json()
+                    proj = app._projeto(d["projeto"])
+                    if d.get("intensidade") not in INTENSIDADES or d.get("faixa") in (None, "", "bateria"):
+                        return self._json({"erro": "faixa ou intensidade inválida"}, 400)
+                    _estado(proj.name, d["faixa"], tipo="limpar", status="rodando", pct=0, erro=None)
+                    threading.Thread(target=_limpar_faixa, args=(proj, d["faixa"], d["intensidade"]), daemon=True).start()
+                    return self._json({"ok": True})
+
+                if u.path == "/api/reconstruir":
+                    d = self._corpo_json()
+                    proj = app._projeto(d["projeto"])
+                    faixa = d.get("faixa")
+                    if not faixa or faixa in ("bateria", "voz"):
+                        return self._json({"erro": "essa faixa não é reconstruída"}, 400)
+                    if d.get("onde") == "pc":
+                        _estado(proj.name, faixa, tipo="reconstruir", onde="pc", status="rodando", pct=0, erro=None)
+                        threading.Thread(target=_reconstruir_no_pc, args=(proj, faixa), daemon=True).start()
+                    else:
+                        pasta = app.saida / PASTA_PEDIDOS
+                        pasta.mkdir(exist_ok=True)
+                        ident = f"{int(time.time() * 1000)}"
+                        (pasta / f"{ident}.json").write_text(json.dumps(
+                            {"projeto": proj.name, "faixa": faixa, "criado": time.time()}, ensure_ascii=False),
+                            encoding="utf-8")
+                        _estado(proj.name, faixa, tipo="reconstruir", onde="colab", status="na fila do Colab",
+                                pct=0, erro=None)
+                    return self._json({"ok": True})
+
                 if u.path == "/api/processar":  # compatível: põe uma música na fila
                     d = self._corpo_json()
                     app.caminho_seguro(app.musicas, d["musica"])
@@ -577,6 +667,85 @@ def _handler(app: App):
                 self._json({"erro": f"não encontrado: {e}"}, 404)
 
     return H
+
+
+# --------------------------------------------------------------------------- trabalhos por faixa
+TRABALHOS: dict[str, dict[str, dict[str, Any]]] = {}   # projeto -> faixa -> {tipo, status, pct, erro}
+PASTA_PEDIDOS = "_pedidos"                             # saida/_pedidos/*.json: pedidos de reconstrução para o Colab
+
+
+def _estado(projeto: str, faixa: str, **campos) -> None:
+    TRABALHOS.setdefault(projeto, {}).setdefault(faixa, {}).update(campos)
+
+
+def _ler_limpeza(proj: Path) -> dict[str, str]:
+    try:
+        return json.loads((proj / "limpeza.json").read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _limpar_faixa(proj: Path, faixa: str, intensidade: str) -> None:
+    """Refaz a limpeza de UMA faixa a partir da crua (stems/), com a intensidade escolhida no mixer."""
+    from .audio_io import achar_arquivo, arquivo_faixa, carregar, salvar
+    from .efeitos import INTENSIDADES, config_com_intensidade
+    from .limpeza import limpar_faixa
+
+    nome = proj.name
+    try:
+        _estado(nome, faixa, tipo="limpar", status="rodando", pct=0, erro=None)
+        crua = achar_arquivo(proj / "stems", faixa)
+        if crua is None:
+            raise FileNotFoundError(f"não achei a faixa crua de {faixa}")
+        audio, sr = carregar(crua)
+        k = INTENSIDADES[intensidade]
+        if k <= 0:
+            limpo = audio
+        else:
+            base = proj / "preset_sugerido.yaml"
+            preset = cfgmod.carregar_preset(base if base.exists() else None)
+            cfg = config_com_intensidade(cfgmod.config_da_faixa(preset, faixa), k)
+            bat = achar_arquivo(proj / "stems", "bateria")
+            bateria = carregar(bat)[0] if bat else None
+            limpo = limpar_faixa(audio, sr, cfg, bateria)
+        # grava no mesmo arquivo que já existe (wav ou flac), para não duplicar a faixa
+        destino = achar_arquivo(proj / "limpas", faixa) or arquivo_faixa(proj / "limpas", faixa)
+        salvar(destino, limpo, sr)
+        sel = _ler_limpeza(proj)
+        sel[faixa] = intensidade
+        (proj / "limpeza.json").write_text(json.dumps(sel, ensure_ascii=False), encoding="utf-8")
+        _estado(nome, faixa, status="pronto", pct=100, fim=time.time())
+        print(f"[limpar] {faixa}: limpeza '{intensidade}' aplicada")
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        _estado(nome, faixa, status="erro", erro=f"{type(e).__name__}: {e}"[:300])
+
+
+def _reconstruir_no_pc(proj: Path, faixa: str) -> None:
+    from .reconstrucao import reconstruir_faixa
+
+    nome = proj.name
+    try:
+        _estado(nome, faixa, tipo="reconstruir", onde="pc", status="rodando", pct=0, erro=None, inicio=time.time())
+        reconstruir_faixa(proj, faixa, "auto", progresso=lambda f: _estado(nome, faixa, pct=round(f * 100)))
+        _estado(nome, faixa, status="pronto", pct=100, fim=time.time())
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        _estado(nome, faixa, status="erro", erro=f"{type(e).__name__}: {e}"[:300])
+
+
+def _pedidos_colab(saida: Path) -> list[dict[str, Any]]:
+    pasta = saida / PASTA_PEDIDOS
+    pedidos = []
+    if pasta.exists():
+        for arq in sorted(pasta.glob("*.json")):
+            try:
+                d = json.loads(arq.read_text(encoding="utf-8"))
+                d["arquivo"] = arq.name
+                pedidos.append(d)
+            except Exception:  # noqa: BLE001
+                pass
+    return pedidos
 
 
 # --------------------------------------------------------------------------- links do YouTube
