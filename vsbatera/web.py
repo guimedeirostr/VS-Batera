@@ -15,6 +15,7 @@ import sys
 import threading
 import time
 import traceback
+import unicodedata
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -194,6 +195,11 @@ def ler_status_colab(saida: Path) -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         return {"vivo": False}
     st["vivo"] = time.time() - float(st.get("atualizado", 0)) < 180
+    # o Colab (Linux) grava acentos decompostos (NFD: "a" + til); o Windows usa NFC ("ã"). Unifica.
+    nfc = lambda t: unicodedata.normalize("NFC", t) if isinstance(t, str) else t  # noqa: E731
+    st["processando"] = nfc(st.get("processando"))
+    for k in ("fila", "erros"):
+        st[k] = [nfc(x) for x in st.get(k) or []]
     return st
 
 
@@ -275,8 +281,8 @@ class Fila:
         for it in self.itens:
             if it.get("modo") != "colab" or it["status"] in ("feita", "erro"):
                 continue
-            stem = Path(it["musica"]).stem
-            if colab_pronta(self.raiz_saida, stem):
+            stem = unicodedata.normalize("NFC", Path(it["musica"]).stem)
+            if colab_pronta(self.raiz_saida, Path(it["musica"]).stem):
                 it.update(status="feita", fim=time.time(), pct=100)
                 mudou = True
             elif st.get("processando") == stem and st.get("vivo"):
