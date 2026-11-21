@@ -248,7 +248,7 @@ async function processar(nome, jaFeita) {
 
 // onde processar: no PC (dupla ou só Demucs) ou no Colab
 function modoEscolhido() { return $("colab").checked ? "colab" : ($("duplo").checked ? "duplo" : "simples"); }
-$("colab").checked = localStorage.getItem("vsb-colab") === "1";
+$("colab").checked = localStorage.getItem("vsb-colab") !== "0";  // padrão: Colab ligado
 $("colab").onchange = () => localStorage.setItem("vsb-colab", $("colab").checked ? "1" : "0");
 
 // upload
